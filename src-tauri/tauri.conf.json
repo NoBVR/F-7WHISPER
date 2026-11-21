@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "F-7WHISPER",
+  "version": "1.0.0",
+  "identifier": "local.f7whisper.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "F-7WHISPER",
+        "url": "index.html",
+        "width": 720,
+        "height": 340,
+        "minWidth": 560,
+        "minHeight": 260,
+        "center": true,
+        "visible": false,
+        "resizable": true,
+        "decorations": false,
+        "shadow": true,
+        "backgroundColor": "#0a0a0a"
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    }
+  }
+}

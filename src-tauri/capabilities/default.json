@@ -1,0 +1,9 @@
+{
+  "identifier": "main",
+  "description": "Allow the main page to listen for backend state and counts.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>F-7WHISPER</title>
+<style>
+@font-face { font-family: Geist; src: url("fonts/Geist-Regular.woff2") format("woff2"); font-weight: 400; }
+@font-face { font-family: Geist; src: url("fonts/Geist-Medium.woff2") format("woff2"); font-weight: 500; }
+@font-face { font-family: Geist; src: url("fonts/Geist-SemiBold.woff2") format("woff2"); font-weight: 600; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); font-weight: 400; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Medium.woff2") format("woff2"); font-weight: 500; }
+
+/* Colours: Vercel Geist dark greys; status green/red from ExcelDB's theme.ts; lines from ExcelDB's redesign.css */
+:root {
+  --bg: #0a0a0a;
+  --text: #ededed;
+  --muted: #a1a1a1;
+  --faint: #737373;
+  --fill: rgba(255, 255, 255, 0.09);
+  --fill-hover: rgba(255, 255, 255, 0.13);
+  --row-hover: rgba(255, 255, 255, 0.03);
+  --line: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.06);
+  --ring: #2e2e2e;
+  --green: #38c172;
+  --red: #ff4d4d;
+  --red-text: #ff6166;
+  --focus: 0 0 0 1px rgba(255, 255, 255, 0.5), 0 0 0 4px rgba(255, 255, 255, 0.12);
+  --cols: 52px minmax(0, 1fr) 110px 100px 130px 92px 52px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text);
+  font: 14px/20px Geist, "Segoe UI", system-ui, sans-serif;
+  user-select: none; -webkit-user-select: none; cursor: default;
+}
+button { font: inherit; color: inherit; border: 0; padding: 0; background: none; cursor: pointer; corner-shape: round; }
+button:focus-visible, input:focus-visible, .seg:focus-within { outline: 0; box-shadow: var(--focus); }
+svg { flex: none; display: block; }
+.squircle { corner-shape: squircle; }
+
+/* ── Window edges: resize handles (hidden while maximized) ── */
+.edge { position: fixed; z-index: 50; }
+.edge[data-edge="n"]  { top: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.edge[data-edge="s"]  { bottom: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.edge[data-edge="w"]  { left: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.edge[data-edge="e"]  { right: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.edge[data-edge="nw"] { top: 0; left: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.edge[data-edge="se"] { bottom: 0; right: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.edge[data-edge="ne"] { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+.edge[data-edge="sw"] { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+body.max .edge { display: none; }
+
+/* ── Title bar ── */
+.titlebar { flex: none; display: flex; align-items: center; height: 40px; }
+.title { flex: 1 1 auto; min-width: 0; align-self: stretch; display: flex; align-items: center; padding-left: 16px; font-size: 13px; font-weight: 600; }
+.pin { display: grid; place-items: center; width: 32px; height: 32px; margin-right: 6px; border-radius: 9999px; color: var(--muted); }
+.pin:hover { background: var(--fill); color: var(--text); }
+.pin[aria-pressed="true"] { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.cap { display: grid; place-items: center; width: 46px; height: 40px; color: var(--text); corner-shape: square; }
+.cap:hover { background: rgba(255, 255, 255, 0.08); }
+.cap.close:hover { background: #c42b1c; color: #fff; }
+.cap .restore { display: none; }
+body.max .cap .maximize { display: none; }
+body.max .cap .restore { display: block; }
+/* macOS: native traffic lights sit over the left of the bar; the system draws resize edges */
+body.mac .cap, body.mac .edge { display: none; }
+body.mac .title { padding-left: 84px; }
+body.mac .pin { margin-right: 16px; }
+
+/* ── macOS Accessibility notice ── */
+.notice { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 16px 12px; padding: 6px 6px 6px 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
+.notice[hidden] { display: none; }
+.notice span { flex: 1 1 auto; min-width: 0; }
+.notice .btn { height: 28px; padding: 0 12px; font-size: 13px; }
+
+/* ── Toolbar ── */
+.toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+.spacer { flex: 1 1 auto; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 16px 0 14px; border-radius: 9999px; background: var(--fill); font-size: 14px; font-weight: 500; white-space: nowrap; }
+.btn:hover { background: var(--fill-hover); }
+.btn.primary { padding: 0 16px 0 12px; background: var(--text); color: var(--bg); }
+.btn.primary:hover { background: #d4d4d4; }
+.btn.primary:disabled { background: rgba(237, 237, 237, 0.35); cursor: default; }
+.btn.has-kbd { padding-right: 6px; }
+kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px; padding: 0 7px; border-radius: 9999px; background: var(--fill); color: var(--muted); font: 500 12px Geist, sans-serif; }
+body.no-hotkey kbd.hotkey { display: none; }
+body.no-hotkey .btn.has-kbd { padding-right: 16px; }
+
+/* ── Table (ExcelDB Groups table) ── */
+.table { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin: 0 16px 16px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); overflow: hidden; }
+.tr { display: grid; grid-template-columns: var(--cols); align-items: center; }
+.tr > * { min-width: 0; padding: 0 12px; }
+.thead { flex: none; height: 36px; color: var(--muted); font-size: 13px; }
+.tbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.tbody:hover { scrollbar-color: #3a3b3e transparent; }
+.row { height: 48px; background-image: linear-gradient(var(--divider), var(--divider)); background-repeat: no-repeat; background-position: 12px 0; background-size: calc(100% - 24px) 1px; }
+.row:hover, .row.menu-open { background-color: var(--row-hover); }
+.num, .count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.key { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.every { font: 13px "Geist Mono", ui-monospace, monospace; color: var(--muted); white-space: nowrap; }
+.pill { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 9999px; font-size: 13px; white-space: nowrap; }
+.pill.on { box-shadow: inset 0 0 0 1px var(--green); color: var(--text); }
+.pill.off { box-shadow: inset 0 0 0 1px var(--red); color: var(--muted); }
+.toggle { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; height: 28px; border-radius: 9999px; background: var(--fill); font-size: 13px; font-weight: 500; }
+.toggle:hover { background: var(--fill-hover); }
+.toggle.stop { color: var(--red-text); }
+.more { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9999px; color: var(--muted); visibility: hidden; }
+.more:hover { background: var(--fill); color: var(--text); }
+.row:is(:hover, :focus-within, .menu-open) .more { visibility: visible; }
+.empty { display: grid; place-items: center; height: 96px; color: var(--muted); }
+
+/* ── ⋯ menu (Vercel dropdown) ── */
+.menu { position: fixed; z-index: 40; min-width: 140px; padding: 6px; border-radius: 12px; background: var(--bg); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.145), 0 4px 8px -4px rgba(0, 0, 0, 0.5), 0 16px 24px -8px rgba(0, 0, 0, 0.6); corner-shape: squircle; }
+.menu[hidden] { display: none; }
+.menu button { display: flex; align-items: center; width: 100%; height: 36px; padding: 0 10px; border-radius: 8px; font-size: 14px; corner-shape: squircle; }
+.menu button:hover, .menu button:focus-visible { background: rgba(255, 255, 255, 0.1); box-shadow: none; }
+.menu .danger { color: var(--red-text); }
+
+/* ── Add / Edit dialog ── */
+.scrim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); }
+.scrim[hidden] { display: none; }
+.dialog { width: 340px; max-height: calc(100vh - 16px); overflow: auto; padding: 18px; border-radius: 12px; background: var(--bg); box-shadow: 0 0 0 1px var(--line), 0 16px 48px -8px rgba(0, 0, 0, 0.8); corner-shape: squircle; }
+.dialog h2 { margin: 0 0 12px; font-size: 16px; line-height: 24px; font-weight: 600; }
+.field { display: grid; gap: 6px; margin-bottom: 12px; }
+.field > span { font-size: 13px; color: var(--muted); }
+.capture { display: flex; align-items: center; height: 36px; padding: 0 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); font-weight: 500; text-align: left; corner-shape: squircle; }
+.capture.empty-key { color: var(--faint); font-weight: 400; }
+.capture.listening { box-shadow: var(--focus); }
+.interval { display: flex; gap: 8px; }
+.interval input { flex: 1 1 auto; min-width: 0; height: 36px; padding: 0 12px; border: 0; border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: var(--text); font: 14px "Geist Mono", ui-monospace, monospace; corner-shape: squircle; user-select: text; }
+.interval input::placeholder { color: var(--faint); }
+.seg { flex: none; display: flex; padding: 3px; border-radius: 9999px; background: rgba(255, 255, 255, 0.06); }
+.seg button { height: 30px; padding: 0 14px; border-radius: 9999px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.seg button[aria-pressed="true"] { background: var(--fill-hover); color: var(--text); }
+.seg button:focus-visible { box-shadow: none; }
+.actions { display: flex; justify-content: space-between; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="edge" data-edge="n"></div><div class="edge" data-edge="s"></div><div class="edge" data-edge="w"></div><div class="edge" data-edge="e"></div>
+<div class="edge" data-edge="nw"></div><div class="edge" data-edge="ne"></div><div class="edge" data-edge="sw"></div><div class="edge" data-edge="se"></div>
+
+<header class="titlebar" id="titlebar">
+  <div class="title" data-drag>F-7WHISPER</div>
+  <button class="pin" id="pin" type="button" aria-label="Keep on top" aria-pressed="false">
+    <!-- Microsoft Fluent UI System Icons "Pin 20 Regular", MIT -->
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10.12 3.14a2 2 0 0 1 3.2-.52l4.06 4.05a2 2 0 0 1-.52 3.2l-3.46 1.74a1.5 1.5 0 0 0-.72.78L11.25 16a1 1 0 0 1-1.64.33L7 13.7 3.7 17H3v-.7L6.3 13l-2.62-2.61a1 1 0 0 1 .34-1.64L7.6 7.32q.52-.23.78-.72zm2.5.18a1 1 0 0 0-1.6.26L9.29 7.04a2.5 2.5 0 0 1-1.31 1.2L4.39 9.69l5.93 5.93 1.43-3.59a2.5 2.5 0 0 1 1.2-1.3l3.47-1.74a1 1 0 0 0 .25-1.6z"/></svg>
+  </button>
+  <button class="cap" type="button" data-window="minimize" aria-label="Minimize">
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" fill="none" stroke="currentColor"/></svg>
+  </button>
+  <button class="cap" type="button" data-window="maximize" aria-label="Maximize">
+    <svg class="maximize" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor"/></svg>
+    <svg class="restore" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="2.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor"/><path d="M2.5 2.5V2A1.5 1.5 0 0 1 4 .5h4A1.5 1.5 0 0 1 9.5 2v4A1.5 1.5 0 0 1 8 7.5h-.5" fill="none" stroke="currentColor"/></svg>
+  </button>
+  <button class="cap close" type="button" data-window="close" aria-label="Close">
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" fill="none" stroke="currentColor"/></svg>
+  </button>
+</header>
+
+<div class="toolbar">
+  <button class="btn" id="startAll" type="button">
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.75v8.5L10.25 6z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>Start all
+  </button>
+  <button class="btn has-kbd" id="stopAll" type="button">
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" fill="currentColor"/></svg>Stop all<kbd class="hotkey" id="hotkey">F7</kbd>
+  </button>
+  <div class="spacer" data-drag></div>
+  <button class="btn primary" id="addKey" type="button">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add key
+  </button>
+</div>
+
+<div class="notice squircle" id="access" role="status" hidden>
+  <span>Allow F-7WHISPER in Accessibility to press keys</span>
+  <button class="btn" id="openAccess" type="button">Open Settings</button>
+</div>
+
+<main class="table squircle" aria-label="Keys">
+  <div class="tr thead" role="row">
+    <span>#</span><span>Key</span><span>Every</span><span>Presses</span><span>Status</span><span></span><span></span>
+  </div>
+  <div class="tbody" id="rows"></div>
+</main>
+
+<div class="menu" id="menu" role="menu" hidden>
+  <button type="button" role="menuitem" data-menu="edit">Edit</button>
+  <button type="button" role="menuitem" class="danger" data-menu="remove">Delete</button>
+</div>
+
+<div class="scrim" id="scrim" hidden>
+  <form class="dialog" id="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle" autocomplete="off">
+    <h2 id="dialogTitle">Add key</h2>
+    <div class="field">
+      <span id="keyLabel">Key</span>
+      <button class="capture empty-key" id="capture" type="button" aria-labelledby="keyLabel capture">Press a key</button>
+    </div>
+    <div class="field">
+      <span id="everyLabel">Every</span>
+      <div class="interval">
+        <input id="intervalValue" inputmode="decimal" maxlength="9" placeholder="1000" aria-labelledby="everyLabel">
+        <div class="seg" role="group" aria-label="Unit">
+          <button type="button" data-unit="ms" aria-pressed="true">ms</button>
+          <button type="button" data-unit="s" aria-pressed="false">s</button>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" id="cancel">Cancel</button>
+      <button class="btn primary" type="submit" id="save" disabled>Add</button>
+    </div>
+  </form>
+</div>
+
+<script>
+"use strict";
+
+/* ── Bridge to the host: Tauri (macOS + Windows) or the C# WebView2 host; a mock stands in in a plain browser ── */
+const tauri = window.__TAURI__;
+const webview = !tauri && window.chrome && window.chrome.webview;
+const host = tauri || webview;
+const send = (msg) => (tauri ? tauri.core.invoke("page_message", { msg }) : webview ? webview.postMessage(msg) : mock.handle(msg));
+if (webview) webview.addEventListener("message", (e) => receive(e.data));
+// Tauri only delivers events to listeners that exist, so "ready" waits for the listener.
+const listening$ = tauri ? tauri.event.listen("host", (e) => receive(e.payload)) : Promise.resolve();
+
+const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
+document.body.classList.toggle("mac", IS_MAC);
+
+const mock = (() => {
+  const rows = [
+    { id: "a", label: "F", code: "KeyF", vk: 70, intervalMs: 250, running: true, count: 1284 },
+    { id: "b", label: "Space", code: "Space", vk: 32, intervalMs: 1000, running: false, count: 0 },
+    { id: "c", label: "E", code: "KeyE", vk: 69, intervalMs: 5000, running: true, count: 37 },
+    { id: "d", label: "Enter", code: "Enter", vk: 13, intervalMs: 30000, running: false, count: 0 },
+  ];
+  const st = { pinned: false, maximized: false };
+  const push = () => setTimeout(() => receive({ type: "state", rows: rows.map((r) => ({ ...r })), pinned: st.pinned, maximized: st.maximized, hotkey: "F7", hotkeyOk: true }));
+  const find = (id) => rows.find((r) => r.id === id);
+  if (!host) setInterval(() => {
+    const counts = {};
+    rows.forEach((r) => { if (r.running) { r.acc = (r.acc || 0) + 200; const n = Math.floor(r.acc / r.intervalMs); if (n) { r.acc -= n * r.intervalMs; r.count += n; counts[r.id] = r.count; } } });
+    if (Object.keys(counts).length) receive({ type: "counts", counts });
+  }, 200);
+  return {
+    handle(m) {
+      const r = m.id && find(m.id);
+      if (m.type === "toggle" && r) r.running = !r.running;
+      else if (m.type === "startAll" || m.type === "stopAll") rows.forEach((x) => (x.running = m.type === "startAll"));
+      else if (m.type === "pin") st.pinned = m.on;
+      else if (m.type === "window" && m.action === "maximize") st.maximized = !st.maximized;
+      else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), label: m.key.label, code: m.key.code, vk: m.key.vk, intervalMs: m.intervalMs, running: false, count: 0 });
+      else if (m.type === "edit" && r) { if (m.key) Object.assign(r, { label: m.key.label, code: m.key.code, vk: m.key.vk }); if (m.intervalMs) r.intervalMs = m.intervalMs; }
+      else if (m.type === "remove" && r) rows.splice(rows.indexOf(r), 1);
+      else if (m.type !== "ready") return;
+      push();
+    },
+  };
+})();
+
+/* ── Rendering ── */
+const $ = (id) => document.getElementById(id);
+let state = { rows: [], pinned: false, maximized: false, hotkeyOk: true };
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const fmtCount = (n) => n.toLocaleString("en-US");
+function fmtEvery(ms) {
+  if (ms >= 60000 && ms % 60000 === 0) return `${ms / 60000} min`;
+  if (ms >= 1000) return `${+(ms / 1000).toFixed(3)} s`;
+  return `${ms} ms`;
+}
+
+const ICON_PLAY = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.75v8.5L10.25 6z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+const ICON_STOP = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" fill="currentColor"/></svg>';
+const ICON_MORE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
+
+function render() {
+  document.body.classList.toggle("max", !!state.maximized);
+  document.body.classList.toggle("no-hotkey", !state.hotkeyOk);
+  if (state.platform) document.body.classList.toggle("mac", state.platform === "macos");
+  $("access").hidden = state.accessOk !== false;
+  $("pin").setAttribute("aria-pressed", String(!!state.pinned));
+  document.querySelector('[data-window="maximize"]').setAttribute("aria-label", state.maximized ? "Restore" : "Maximize");
+
+  const focusedId = document.activeElement && document.activeElement.closest(".row") ? document.activeElement.closest(".row").dataset.id : null;
+  const focusedRole = document.activeElement && document.activeElement.dataset.role;
+  $("rows").innerHTML = state.rows.length
+    ? state.rows.map((r, i) => `
+      <div class="tr row" role="row" data-id="${esc(r.id)}">
+        <span class="num">${i + 1}</span>
+        <span class="key" title="${esc(r.label)}">${esc(r.label)}</span>
+        <span class="every">${esc(fmtEvery(r.intervalMs))}</span>
+        <span class="count">${fmtCount(r.count)}</span>
+        <span><span class="pill ${r.running ? "on" : "off"}">${r.running ? "Running" : "Stopped"}</span></span>
+        <span><button class="toggle ${r.running ? "stop" : ""}" type="button" data-role="toggle">${r.running ? ICON_STOP + "Stop" : ICON_PLAY + "Start"}</button></span>
+        <span><button class="more" type="button" data-role="more" aria-label="More for ${esc(r.label)}" aria-haspopup="menu" aria-expanded="false">${ICON_MORE}</button></span>
+      </div>`).join("")
+    : '<div class="empty">No keys yet</div>';
+
+  if (focusedId && focusedRole) {
+    const again = document.querySelector(`.row[data-id="${CSS.escape(focusedId)}"] [data-role="${focusedRole}"]`);
+    if (again) again.focus();
+  }
+  if (menuFor && !state.rows.some((r) => r.id === menuFor)) closeMenu();
+}
+
+function receive(msg) {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.type === "state") { state = msg; render(); }
+  else if (msg.type === "counts") {
+    for (const [id, n] of Object.entries(msg.counts || {})) {
+      const row = state.rows.find((r) => r.id === id);
+      if (row) row.count = n;
+      const cell = document.querySelector(`.row[data-id="${CSS.escape(id)}"] .count`);
+      if (cell) cell.textContent = fmtCount(n);
+    }
+  }
+}
+
+/* ── Window: drag, double-click to maximize, resize edges, caption buttons ── */
+let lastDown = { t: 0, x: 0, y: 0 };
+document.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  const edge = e.target.closest(".edge");
+  if (edge) { e.preventDefault(); send({ type: "window", action: "resize", edge: edge.dataset.edge }); return; }
+  if (!e.target.closest("[data-drag]") || e.target.closest("button")) return;
+  e.preventDefault();
+  const quick = e.timeStamp - lastDown.t < 400 && Math.abs(e.screenX - lastDown.x) < 4 && Math.abs(e.screenY - lastDown.y) < 4;
+  lastDown = quick ? { t: 0, x: 0, y: 0 } : { t: e.timeStamp, x: e.screenX, y: e.screenY };
+  send({ type: "window", action: quick ? "maximize" : "drag" });
+});
+$("titlebar").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-window]");
+  if (b) send({ type: "window", action: b.dataset.window });
+});
+$("pin").addEventListener("click", () => send({ type: "pin", on: !state.pinned }));
+$("startAll").addEventListener("click", () => send({ type: "startAll" }));
+$("stopAll").addEventListener("click", () => send({ type: "stopAll" }));
+$("addKey").addEventListener("click", () => openDialog(null));
+
+/* ── Rows ── */
+$("rows").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-role]");
+  const row = e.target.closest(".row");
+  if (!btn || !row) return;
+  if (btn.dataset.role === "toggle") send({ type: "toggle", id: row.dataset.id });
+  if (btn.dataset.role === "more") menuFor === row.dataset.id ? closeMenu() : openMenu(row.dataset.id, btn);
+});
+
+/* ── ⋯ menu ── */
+let menuFor = null;
+function openMenu(id, anchor) {
+  closeMenu();
+  menuFor = id;
+  const menu = $("menu");
+  menu.hidden = false;
+  const a = anchor.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  const below = a.bottom + 4 + m.height <= window.innerHeight - 8;
+  menu.style.left = `${Math.max(8, a.right - m.width)}px`;
+  menu.style.top = `${below ? a.bottom + 4 : a.top - 4 - m.height}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  anchor.closest(".row").classList.add("menu-open");
+  menu.querySelector("button").focus();
+}
+function closeMenu() {
+  if (!menuFor) return;
+  const row = document.querySelector(`.row[data-id="${CSS.escape(menuFor)}"]`);
+  if (row) { row.classList.remove("menu-open"); row.querySelector(".more").setAttribute("aria-expanded", "false"); }
+  $("menu").hidden = true;
+  menuFor = null;
+}
+$("menu").addEventListener("click", (e) => {
+  const item = e.target.closest("button[data-menu]");
+  if (!item || !menuFor) return;
+  const id = menuFor;
+  closeMenu();
+  if (item.dataset.menu === "remove") send({ type: "remove", id });
+  else openDialog(state.rows.find((r) => r.id === id));
+});
+document.addEventListener("mousedown", (e) => { if (menuFor && !e.target.closest("#menu, .more")) closeMenu(); });
+window.addEventListener("blur", closeMenu);
+window.addEventListener("resize", closeMenu);
+$("rows").addEventListener("scroll", closeMenu);
+$("menu").addEventListener("keydown", (e) => {
+  const items = [...$("menu").querySelectorAll("button")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus(); }
+  if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); const id = menuFor; closeMenu(); const b = document.querySelector(`.row[data-id="${CSS.escape(id)}"] .more`); if (b) b.focus(); }
+});
+
+/* ── Add / Edit dialog with key capture ── */
+let editing = null;      // row being edited, or null when adding
+let pickedKey = null;    // { label, code, vk }
+let unit = "ms";
+let listening = false;
+let returnFocus = null;
+
+const SIDE = { Left: "Left", Right: "Right" };
+function keyLabel(e) {
+  const c = e.code;
+  const mod = c.match(/^(Shift|Control|Alt|Meta)(Left|Right)$/);
+  if (mod) return `${SIDE[mod[2]]} ${(IS_MAC ? { Shift: "Shift", Control: "Control", Alt: "Option", Meta: "Command" } : { Shift: "Shift", Control: "Ctrl", Alt: "Alt", Meta: "Win" })[mod[1]]}`;
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+  if (/^Digit\d$/.test(c)) return c.slice(5);
+  if (/^Arrow/.test(c)) return c.slice(5);
+  if (/^Numpad/.test(c)) {
+    const rest = c.slice(6);
+    return `Num ${({ Add: "+", Subtract: "−", Multiply: "×", Divide: "÷", Decimal: ".", Enter: "Enter" })[rest] || rest}`;
+  }
+  if (/^F\d{1,2}$/.test(c)) return c;
+  const named = { Space: "Space", Enter: "Enter", Tab: "Tab", Backspace: "Backspace", CapsLock: "Caps Lock", Insert: "Insert", Delete: "Delete", Home: "Home", End: "End", PageUp: "Page Up", PageDown: "Page Down", ContextMenu: "Menu" };
+  if (named[c]) return named[c];
+  return e.key && e.key.length === 1 ? e.key.toUpperCase() : (c || e.key);
+}
+
+function setUnit(u) {
+  unit = u;
+  document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.unit === u)));
+  validate();
+}
+function intervalMs() {
+  const v = Number($("intervalValue").value.trim().replace(",", "."));
+  if (!Number.isFinite(v) || v <= 0) return null;
+  const ms = Math.round(unit === "s" ? v * 1000 : v);
+  return ms >= 20 && ms <= 86400000 ? ms : null;
+}
+function validate() { $("save").disabled = !(pickedKey && intervalMs()); }
+function showKey() {
+  const c = $("capture");
+  c.classList.toggle("listening", listening);
+  c.classList.toggle("empty-key", !pickedKey);
+  c.textContent = pickedKey ? pickedKey.label : "Press a key";
+}
+
+function openDialog(row) {
+  closeMenu();
+  editing = row;
+  returnFocus = document.activeElement;
+  pickedKey = row ? { label: row.label, code: row.code, vk: row.vk } : null;
+  $("dialogTitle").textContent = row ? "Edit key" : "Add key";
+  $("save").textContent = row ? "Save" : "Add";
+  if (row && row.intervalMs >= 1000 && row.intervalMs % 1000 === 0) { $("intervalValue").value = String(row.intervalMs / 1000); setUnit("s"); }
+  else { $("intervalValue").value = row ? String(row.intervalMs) : ""; setUnit("ms"); }
+  $("scrim").hidden = false;
+  listening = !row;
+  showKey();
+  (row ? $("intervalValue") : $("capture")).focus();
+  validate();
+}
+function closeDialog() {
+  $("scrim").hidden = true;
+  listening = false;
+  editing = null;
+  if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
+}
+
+$("capture").addEventListener("click", () => { listening = true; showKey(); });
+$("capture").addEventListener("blur", () => { listening = false; showKey(); });
+$("dialog").addEventListener("keydown", (e) => {
+  if (listening) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") { listening = false; showKey(); return; }
+    if (e.code === "F7" || !e.code) return;          // F7 is the Stop all hotkey
+    pickedKey = { label: keyLabel(e), code: e.code, vk: e.keyCode };
+    listening = false;
+    showKey();
+    validate();
+    $("intervalValue").focus();
+    return;
+  }
+  if (e.key === "Escape") { e.preventDefault(); closeDialog(); }
+  if (e.key === "Tab") {                               // keep focus inside the dialog
+    const f = [...$("dialog").querySelectorAll("button:not(:disabled), input")];
+    const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+  }
+});
+$("intervalValue").addEventListener("input", (e) => { e.target.value = e.target.value.replace(/[^\d.,]/g, ""); validate(); });
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => setUnit(b.dataset.unit)));
+$("cancel").addEventListener("click", closeDialog);
+$("scrim").addEventListener("mousedown", (e) => { if (e.target === $("scrim")) closeDialog(); });
+$("dialog").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const ms = intervalMs();
+  if (!pickedKey || !ms) return;
+  if (editing) send({ type: "edit", id: editing.id, key: pickedKey, intervalMs: ms });
+  else send({ type: "add", key: pickedKey, intervalMs: ms });
+  closeDialog();
+});
+
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+document.addEventListener("dragstart", (e) => e.preventDefault());
+
+$("openAccess").addEventListener("click", () => send({ type: "openAccessSettings" }));
+listening$.then(() => send({ type: "ready" }));
+</script>
+</body>
+</html>

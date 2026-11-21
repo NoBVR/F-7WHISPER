@@ -1,0 +1,33 @@
+name: Mac build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Universal = one app for Apple Silicon and Intel Macs.
+      - run: npx tauri build --target universal-apple-darwin --bundles dmg
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: F-7WHISPER-mac
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
