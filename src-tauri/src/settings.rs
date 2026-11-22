@@ -198,8 +198,25 @@ impl Hotkey {
                 || (self.key.same_key(b) && a.same_key(&other.key)),
             _ => false,
         };
-        same_keys && self.ctrl == other.ctrl && self.alt == other.alt
+        same_keys && self.same_modifiers(other)
+    }
+
+    fn same_modifiers(&self, other: &Self) -> bool {
+        self.ctrl == other.ctrl && self.alt == other.alt
             && self.shift == other.shift && self.meta == other.meta
+    }
+
+    /// A two-key hotkey and a one-key hotkey that is one of its keys, with the
+    /// same modifiers. The one-key binding would fire as part of the combo.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let (pair, single) = match (&self.with, &other.with) {
+            (Some(_), None) => (self, other),
+            (None, Some(_)) => (other, self),
+            _ => return false,
+        };
+        pair.same_modifiers(single)
+            && (single.key.same_key(&pair.key)
+                || pair.with.as_ref().is_some_and(|with| single.key.same_key(with)))
     }
 }
 

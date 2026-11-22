@@ -52,16 +52,34 @@ struct Context {
 
 impl Context {
     fn key_down(&self, bit: u128, mods: usize, repeat: bool) -> bool {
-        let held = self.held_keys.get() | bit;
-        let previously_held = self.held_keys.replace(held);
-        if previously_held & bit != 0 || repeat {
+        if repeat {
             return self.swallowed.get() & bit != 0;
         }
+        if self.held_keys.get() & bit != 0 {
+            // A fresh press of a key still marked held: its key-up was missed.
+            self.key_up(bit);
+        }
+        self.held_keys.set(self.held_keys.get() | bit);
 
         let Ok(combos) = self.tracker.table.combos.try_lock() else { return false };
         for combo in combos.iter() {
             // A newly held key cannot belong to an already active combo.
-            if combo.keys & bit != 0 && held & combo.keys == combo.keys && mods == combo.mods {
+            if combo.keys & bit != 0 && self.held_keys.get() & combo.keys == combo.keys
+                && mods == combo.mods
+            {
+                // A key-up the tap never saw (Secure Input, a disabled tap) would
+                // leave a stale held bit: confirm the other key with the hardware.
+                let partner = combo.keys & !bit;
+                let down = unsafe {
+                    CGEventSourceKeyState(
+                        CGEventSourceStateID::HIDSystemState,
+                        partner.trailing_zeros() as u16,
+                    )
+                };
+                if !down {
+                    self.key_up(partner);
+                    continue;
+                }
                 self.active.borrow_mut().push(*combo);
                 self.swallowed.set(self.swallowed.get() | bit);
                 self.tracker.inbox.post(Message::ShortcutEdge { token: combo.token, pressed: true });

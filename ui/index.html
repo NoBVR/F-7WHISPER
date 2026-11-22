@@ -736,13 +736,21 @@ const add = { editing: null, kind: "key", key: null, button: "left", where: "cur
 // An activate key must not be a Start all / Stop all hotkey or a key that a row presses (the press would set it off),
 // and a row must not press a key that activates a row. Two-key activate keys ignore F-7's own presses, so they're exempt.
 const plain = (h) => !!h && !h.with && !h.ctrl && !h.alt && !h.shift && !h.meta;
+// A two-key activate key must not contain a one-key hotkey (same modifiers): that key alone would fire first.
+const sameMods = (a, b) => ["ctrl", "alt", "shift", "meta"].every((m) => !!a[m] === !!b[m]);
+function overlaps(a, b) {
+  if (!a || !b || !a.with === !b.with || !sameMods(a, b)) return false;
+  const [pair, single] = a.with ? [a, b] : [b, a];
+  return single.code === pair.code || single.code === pair.with.code;
+}
 function conflicts() {
   const hk = state.hotkeys || {};
   const others = state.rows.filter((r) => !add.editing || r.id !== add.editing.id);
   const t = add.trigger;
   const keyCode = add.kind === "key" && add.key ? add.key.code : null;
   return {
-    trigger: !!t && (sameHotkey(t, hk.start) || sameHotkey(t, hk.stop)
+    trigger: !!t && (sameHotkey(t, hk.start) || sameHotkey(t, hk.stop) || overlaps(t, hk.start) || overlaps(t, hk.stop)
+      || others.some((r) => r.trigger && overlaps(t, r.trigger.hotkey))
       || (plain(t) && (t.code === keyCode || others.some((r) => r.kind === "key" && r.code === t.code)))),
     key: !!keyCode && others.some((r) => r.trigger && plain(r.trigger.hotkey) && r.trigger.hotkey.code === keyCode),
   };

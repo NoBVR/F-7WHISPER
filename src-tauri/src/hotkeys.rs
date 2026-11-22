@@ -130,6 +130,13 @@ impl Bindings {
                 access_ok || mouse::slot(key).is_none()
             }
         });
+        // A combo that shares a key with a one-key binding (Start all, Stop all
+        // or another row's activate key) stays unregistered.
+        let singles: Vec<Hotkey> = wanted.iter()
+            .filter(|(_, key)| key.with.is_none())
+            .map(|(_, key)| (*key).clone())
+            .collect();
+        wanted.retain(|(_, key)| !singles.iter().any(|single| key.overlaps(single)));
 
         let mut released = Vec::new();
         let mut kept = Vec::new();

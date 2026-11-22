@@ -2,7 +2,10 @@
 
 Added on the Mac on 2026-11-22. A row's activate key (Hold or Press) can be two ordinary keys held together, for example `F7 + G`, optionally with modifiers (`⌃F7 + G`). A Settings switch, **Two-key activate keys**, turns the feature off.
 
-**Status:** done on the Mac host (`src-tauri/`) and the shared page (`ui/index.html`). **The Windows C# host (`src/*.cs`) is not updated yet.** The page hides the feature from a host that doesn't report it (see "Page gate"), so the current Windows app keeps working as before after a rebuild. Section "Windows: what to change" is the to-do list for the PC.
+**Status:**
+
+- **Mac host (`src-tauri/`) and shared page (`ui/index.html`):** written, type-checked and installed on the user's Mac. Page capture and conflicts were checked in the browser mock. **Not yet tested with real key presses**, and the `cfg(windows)` paths of the Tauri build couldn't be compiled on the Mac.
+- **The Windows C# host (`src/*.cs`) is not updated yet.** The page hides the feature from a host that doesn't report it (see "Page gate"), so the current Windows app keeps working as before after a rebuild. Section "Windows: what to change" is the to-do list for the PC.
 
 ## Contract (both hosts)
 
@@ -61,6 +64,9 @@ A hotkey can have an optional second key, `with`:
 - With the switch off, or when the host doesn't report `twoKey`, the first key finishes the capture at once (old behaviour).
 - Mouse 4 / Mouse 5 still finish at once as a one-key activate key.
 - **Conflicts:** a combo never conflicts with a row's pressed key, because posted keys are ignored. A row's single key still conflicts with a one-key activate key as before.
+- **Overlap:** a combo conflicts with a one-key hotkey that is one of its two keys with the same modifiers. That covers Start all / Stop all and other rows' one-key activate keys, in both directions. With the default Stop all = F7, `F7 + G` is refused until Stop all is changed, because F7 alone would stop everything first.
+  - The page marks it red and blocks Save.
+  - The host also refuses to register such a combo (`triggerOk: false`), which covers a Start/Stop change made later in Settings.
 
 ## Mac host: how it's done
 
@@ -69,9 +75,11 @@ A hotkey can have an optional second key, `with`:
   - It is an active `CGEventTap` at the session level, so it needs Accessibility only, like the side buttons.
   - It keeps a held-key bitmap, posts `ShortcutEdge` edges for combo tokens and swallows the completing key.
   - After a tap timeout it re-checks the held keys with `CGEventSourceKeyState`.
-- `hotkeys.rs`: combo hotkeys register only through the tap (`Registration::Combo`), never through `tauri-plugin-global-shortcut`.
+  - Before a combo fires, it confirms the other key is really down with `CGEventSourceKeyState`. A key-up the tap never saw (for example under Secure Input) can't leave a stale key that completes a combo on its own.
+  - A fresh, non-repeat press of a key still marked held settles the missed key-up first.
+- `hotkeys.rs`: combo hotkeys register only through the tap (`Registration::Combo`), never through `tauri-plugin-global-shortcut`. A combo that overlaps a one-key binding (`Hotkey::overlaps`) is dropped before registering.
 - `main.rs`: `twoKey` in `state`, the `settings` message and the save.
-- `engine.rs` `Rows::edit`: a running Hold row stops when its Hold key is changed or removed. The old key's release would no longer reach the row, so before this it kept running. Editing anything else keeps it running, as before.
+- `engine.rs` `Rows::edit`: a running Hold row stops when its activate key is changed or removed. The old key's release would no longer reach the row, so before this it kept running. Editing anything else, including Hold → Press with the same key, keeps it running, as before.
 
 ## Windows: what to change (not done; do on the PC)
 
@@ -87,16 +95,17 @@ Nothing here has been compiled: this Mac has no `dotnet`. Read the current code 
    - In `settings`, read `twoKey` (bool; keep the current value if missing), store it, and call `RegisterHotkeys()`.
    - In `RegisterHotkeys` / `ApplyBindings`, never pass a two-key chord to `RegisterHotKey`. `RegisterHotKey` can't express two plain keys, and registering one of them would swallow it everywhere.
    - Give two-key chords to a keyboard hook (below) only while `_twoKey` is on, and report `_triggerOk` for them as "hook running and switch on".
+   - Skip a two-key chord that overlaps a one-key binding in `wanted`, i.e. one of its keys with the same modifiers is Start, Stop or another row's one-key activate key. Report it as not OK. (Mac: `Hotkey::overlaps` in `src-tauri/src/settings.rs`.)
 3. **New keyboard hook**, modelled on `src/MouseHotkeys.cs` (`WH_MOUSE_LL` on its own thread with an edge queue):
    - `WH_KEYBOARD_LL`. Skip events with `LLKHF_INJECTED` or `dwExtraInfo == 0x800DA5A5`.
    - Keep a set of held VKs. Map left/right modifier VKs to Ctrl/Alt/Shift/Win and don't treat them as combo keys.
-   - On a key-down that completes a bound combo with matching modifiers: queue a down edge, mark that VK swallowed and return 1. Swallow its repeats, and its key-up when it comes.
+   - On a key-down that completes a bound combo with matching modifiers, first confirm the other key with `GetAsyncKeyState` (a missed key-up must not leave it "held"). Then queue a down edge, mark that VK swallowed and return 1. Swallow its repeats, and its key-up when it comes.
    - On either key's up: queue an up edge.
    - Install the hook only while at least one combo is bound. On dispose, queue up edges for any active combo.
 4. **`src/KeyEngine.cs`**
    - Hold release for combos must come from the hook's up edge, the way `ReleaseMouseHold` works for side buttons.
    - The `GetAsyncKeyState(vk)` polling in `PollHolds` only knows one VK. Either treat combos like mouse holds (`_mouseHolds`-style set released by the edge), or poll both VKs.
-   - To match the Mac: when a row is edited and its Hold key changes or is removed, stop that row.
+   - To match the Mac: when a running Hold row is edited and its activate key changes or is removed, stop that row.
 5. **Rebuild and install:** the `dotnet publish` line in `docs/HANDOFF.md` §7. Then test on Windows:
    - `F7 + G` Hold runs only while both are held.
    - `G` alone still types `G` in Notepad.

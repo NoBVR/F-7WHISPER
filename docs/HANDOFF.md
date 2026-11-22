@@ -8,7 +8,7 @@ Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Ma
 
 **Two-key activate keys** were added: a row's Hold or Press key can be two ordinary keys held together (`F7 + G`), with a Settings switch, **Two-key activate keys**, to turn it off. The user asked for this in their words: "Any key + any key", "Add an option to disable it", and a note so the Windows version can be updated to match.
 
-- **Done:** the shared page (`ui/index.html`) and the Mac host (`src-tauri/`).
+- **Mac host (`src-tauri/`) and shared page (`ui/index.html`):** written, type-checked and installed on the Mac, but **not yet tested with real key presses**. The `cfg(windows)` paths of the Tauri build weren't compiled (the Mac can't cross-check them).
 - **Not done: the Windows C# host.** The full contract and the Windows to-do list are in [`docs/TWO-KEY.md`](TWO-KEY.md). Claude on the PC: read it, make the Windows changes, rebuild and reinstall the Windows app (§7).
 - Until then a rebuilt Windows app behaves exactly as before. The page only offers two-key capture when the host sends `twoKey` in `state`, and the C# host doesn't yet.
 
@@ -216,6 +216,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - Windows: UI and dialogs over CDP, key rows at 999/s.
 - Blur's 147 tests on Windows and macOS.
 - Mac CI builds; Blur on GitHub's macOS 26 VM at ~997/s with every event delivered.
+- Two-key activate keys (2026-11-22, on the user's Mac): `cargo check` clean, Blur's 147 tests pass, app built and installed, page capture / conflicts / switch / old-host gate checked in the browser mock.
 
 **Not verified on a real Mac:**
 - traffic-light position and title bar;
@@ -224,9 +225,11 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - Start/Stop hotkeys and activate keys (Hold / Press), modifier combos, mouse side buttons;
 - point picking and "Only in";
 - the real-hardware rate;
-- whether `NSWorkspace` calls off the main thread misbehave.
+- whether `NSWorkspace` calls off the main thread misbehave;
+- two-key activate keys with real key presses (the keyboard event tap, swallowing the completing key, Hold release), and whether macOS asks for Input Monitoring for it;
+- the `cfg(windows)` paths of the Tauri build after the two-key change (not compiled).
 
-The user's first real-Mac report is Task A / Task B above.
+The user's first real-Mac report and what was done about it are in §0.
 
 ---
 
