@@ -120,7 +120,7 @@ impl Stop {
     }
 }
 
-extern "C" fn stop_current(_: *mut c_void) {
+extern "C" fn stop_current(_: *const c_void) {
     CFRunLoop::get_current().stop();
 }
 
