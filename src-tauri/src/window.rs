@@ -5,8 +5,9 @@ use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 pub const WIDTH: i64 = 800;
 
 pub fn initial_height(rows: usize) -> i64 {
-    let body = if rows == 0 { 96 } else { (rows as i64).saturating_mul(48) };
-    160i64.saturating_add(body)
+    // Title 40 + toolbar 56 + header 36 + rows (8 at most, then the table scrolls) + bottom gap 16.
+    let body = if rows == 0 { 96 } else { (rows.min(8) as i64) * 48 };
+    148 + body
 }
 
 pub fn position(window: &WebviewWindow) -> Option<Position> {

@@ -116,7 +116,7 @@ internal sealed class MainForm : Form
             return;
 
         int rows = _engine.RowCount;
-        long heightCss = _fitHeight ?? (40L + 56 + 36 + (rows == 0 ? 96 : 48L * rows) + 28);
+        long heightCss = _fitHeight ?? (40L + 56 + 36 + (rows == 0 ? 96 : 48L * Math.Min(rows, 8)) + 16);
         double scale = (dpi > 0 ? dpi : 96) / 96.0;
         int width = (int)Math.Clamp(Math.Round((_fitWidth ?? WidthCss) * scale), 1, area.Width);
         int height = (int)Math.Clamp(Math.Round(heightCss * scale), 1, area.Height);
