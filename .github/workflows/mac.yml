@@ -39,3 +39,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --manifest-path blur-engine/Cargo.toml
       - run: cargo run --release --manifest-path blur-engine/Cargo.toml --example mac_rate
+      - run: cargo run --release --manifest-path blur-engine/Cargo.toml --example mac_timing
