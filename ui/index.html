@@ -28,7 +28,7 @@
   --red: #ff4d4d;
   --red-text: #ff6166;
   --focus: 0 0 0 1px rgba(255, 255, 255, 0.5), 0 0 0 4px rgba(255, 255, 255, 0.12);
-  --cols: 52px minmax(0, 1fr) 110px 100px 130px 92px 52px;
+  --cols: 52px minmax(0, 1fr) 132px 100px 92px 116px 92px 48px;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
@@ -43,6 +43,10 @@ button:focus-visible, input:focus-visible { outline: 0; box-shadow: var(--focus)
 svg { flex: none; display: block; }
 .squircle { corner-shape: squircle; }
 [hidden] { display: none !important; }
+
+/* ── Top edge: a faint lit line just under Windows' 1 px border (which covers the page's row 0) makes the top read a touch heavier,
+   as if lit from above (~6% white, the usual dark-UI top highlight). macOS draws its own frame. ── */
+body:not(.mac)::before { content: ""; position: fixed; z-index: 80; top: 1px; left: 0; right: 0; height: 1px; background: rgba(255, 255, 255, 0.06); pointer-events: none; }
 
 /* ── Title bar ── */
 .titlebar { flex: none; display: flex; align-items: center; height: 40px; }
@@ -100,6 +104,13 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
 .more:hover { background: var(--fill); color: var(--text); }
 .row:is(:hover, :focus-within, .menu-open) .more { visibility: visible; }
 .empty { display: grid; place-items: center; height: 96px; color: var(--muted); }
+.trig { display: flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 8px 0 10px; border-radius: 9999px; background: var(--fill); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.trig:hover, .trig[aria-expanded="true"] { background: var(--fill-hover); }
+.trig .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.trig .mode, .trig .hint { color: var(--muted); font-weight: 400; }
+.trig svg { color: var(--muted); }
+.trig.bad, .box.bad { box-shadow: inset 0 0 0 1px var(--red); }
+.menu hr { height: 1px; margin: 6px 4px; border: 0; background: var(--line); }
 
 /* ── Footer ── */
 .foot { flex: none; display: flex; align-items: center; justify-content: flex-end; height: 28px; padding-right: 16px; font: 11px/16px "Geist Mono", ui-monospace, monospace; color: var(--version); }
@@ -181,7 +192,7 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
 
 <main class="table squircle" aria-label="Inputs">
   <div class="tr thead" role="row">
-    <span>#</span><span>Input</span><span>Every</span><span>Presses</span><span>Status</span><span></span><span></span>
+    <span>#</span><span>Input</span><span>Activate</span><span>Every</span><span>Presses</span><span>Status</span><span></span><span></span>
   </div>
   <div class="tbody" id="rows"></div>
 </main>
@@ -193,6 +204,7 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
   <button type="button" role="menuitem" class="danger" data-menu="remove">Delete</button>
 </div>
 <div class="menu apps" id="appMenu" role="menu" hidden></div>
+<div class="menu" id="trigMenu" role="menu" hidden></div>
 
 <!-- Add / Edit -->
 <div class="scrim" id="addScrim" hidden>
@@ -241,6 +253,19 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
         <div class="seg" role="group" aria-label="Unit">
           <button type="button" data-unit="ms" aria-pressed="true">ms</button>
           <button type="button" data-unit="s" aria-pressed="false">s</button>
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <span id="trigLabel">Activate</span>
+      <div class="line">
+        <button class="box" id="trigCapture" type="button" aria-labelledby="trigLabel trigCapture"></button>
+        <button class="clear" type="button" id="trigClear" aria-label="Clear activate key">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" fill="none" stroke="currentColor"/></svg>
+        </button>
+        <div class="seg" role="group" aria-labelledby="trigLabel">
+          <button type="button" data-mode="hold" aria-pressed="true">Hold</button>
+          <button type="button" data-mode="toggle" aria-pressed="false">Press</button>
         </div>
       </div>
     </div>
@@ -311,15 +336,16 @@ document.body.classList.toggle("mac", UA_MAC);
 const mock = (() => {
   const F6 = { label: "F6", code: "F6", vk: 117, ctrl: false, alt: false, shift: false, meta: false };
   const F7 = { label: "F7", code: "F7", vk: 118, ctrl: false, alt: false, shift: false, meta: false };
+  const G = { label: "G", code: "KeyG", vk: 71, ctrl: false, alt: false, shift: false, meta: false };
   const rows = [
-    { id: "a", kind: "key", label: "F", code: "KeyF", vk: 70, app: null, intervalMs: 250, running: true, count: 1284 },
-    { id: "b", kind: "key", label: "Space", code: "Space", vk: 32, app: null, intervalMs: 1000, running: false, count: 0 },
-    { id: "e", kind: "click", button: "left", at: null, app: "RobloxPlayerBeta.exe", intervalMs: 100, running: true, count: 5120 },
+    { id: "a", kind: "key", label: "F", code: "KeyF", vk: 70, app: null, trigger: { hotkey: G, mode: "toggle" }, intervalMs: 250, running: true, count: 1284 },
+    { id: "b", kind: "key", label: "Space", code: "Space", vk: 32, app: null, trigger: null, intervalMs: 1000, running: false, count: 0 },
+    { id: "e", kind: "click", button: "left", at: null, app: "RobloxPlayerBeta.exe", trigger: { hotkey: { ...G, label: "X", code: "KeyX", vk: 88 }, mode: "hold" }, intervalMs: 100, running: true, count: 5120 },
   ];
   const st = { pinned: false, hotkeys: { start: F6, stop: F7 }, switchStop: true };
   const push = () => setTimeout(() => receive({
     type: "state", version: "1.0.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
-    rows: rows.map((r) => ({ ...r })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop,
+    rows: rows.map((r) => ({ ...r, triggerOk: !!r.trigger })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop,
   }));
   const find = (id) => rows.find((r) => r.id === id);
   const fromInput = (i) => (i.kind === "click"
@@ -337,8 +363,8 @@ const mock = (() => {
       if (m.type === "toggle" && r) r.running = !r.running;
       else if (m.type === "startAll" || m.type === "stopAll") rows.forEach((x) => (x.running = m.type === "startAll"));
       else if (m.type === "pin") st.pinned = m.on;
-      else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), ...fromInput(m.input), app: m.input.app, intervalMs: m.input.intervalMs, running: false, count: 0 });
-      else if (m.type === "edit" && r) Object.assign(r, fromInput(m.input), { app: m.input.app, intervalMs: m.input.intervalMs });
+      else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), ...fromInput(m.input), app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs, running: false, count: 0 });
+      else if (m.type === "edit" && r) Object.assign(r, fromInput(m.input), { app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs });
       else if (m.type === "remove" && r) rows.splice(rows.indexOf(r), 1);
       else if (m.type === "settings") Object.assign(st, { hotkeys: m.hotkeys, switchStop: m.switchStop });
       else if (m.type === "listApps") { setTimeout(() => receive({ type: "apps", apps: ["Discord.exe", "javaw.exe", "notepad.exe", "RobloxPlayerBeta.exe"] }), 60); return; }
@@ -382,6 +408,7 @@ const ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" 
 
 /* ── Window height follows the content: rows up to MAX_ROWS, then the table scrolls ── */
 const MAX_ROWS = 8;
+const WIDTH = 800;
 let lastFit = 0;
 function neededHeight() {
   const n = state.rows.length;
@@ -393,7 +420,7 @@ function neededHeight() {
 function fit() {
   requestAnimationFrame(() => {
     const h = neededHeight();
-    if (h !== lastFit) { lastFit = h; send({ type: "fit", height: h }); }
+    if (h !== lastFit) { lastFit = h; send({ type: "fit", height: h, width: WIDTH }); }
   });
 }
 
@@ -422,6 +449,7 @@ function render() {
       <div class="tr row" role="row" data-id="${esc(r.id)}">
         <span class="num">${i + 1}</span>
         <span class="input" title="${esc(rowTitle(r))}">${r.kind === "click" ? ICON_MOUSE : ""}<strong class="key">${esc(rowName(r))}</strong></span>
+        <span>${trigChip(r)}</span>
         <span class="every">${esc(fmtEvery(r.intervalMs))}</span>
         <span class="count">${fmtCount(r.count)}</span>
         <span><span class="pill ${r.running ? "on" : "off"}">${r.running ? "Running" : "Stopped"}</span></span>
@@ -434,8 +462,31 @@ function render() {
     const again = document.querySelector(`.row[data-id="${CSS.escape(focusedId)}"] [data-role="${focusedRole}"]`);
     if (again) again.focus();
   }
-  if (menuFor && !state.rows.some((r) => r.id === menuFor)) closeMenu();
+  // Rebuilt rows lose their open-menu marks; put them back, or close a menu whose row is gone.
+  for (const [id, sel, close] of [[menuFor, ".more", closeMenu], [trigFor, ".trig", closeTrigMenu]]) {
+    if (!id) continue;
+    const row = document.querySelector(`.row[data-id="${CSS.escape(id)}"]`);
+    if (!row) { close(); continue; }
+    row.classList.add("menu-open");
+    row.querySelector(sel).setAttribute("aria-expanded", "true");
+  }
   fit();
+}
+
+const MODE_NAME = { hold: "Hold", toggle: "Press" };
+const ICON_CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg>';
+function trigChip(r) {
+  const t = r.trigger;
+  const body = t
+    ? `<span class="mode">${MODE_NAME[t.mode] || "Hold"}</span><span class="label">${esc(t.hotkey.label)}</span>`
+    : '<span class="hint">None</span>';
+  const title = t ? `${MODE_NAME[t.mode] || "Hold"} ${t.hotkey.label}` : "No activate key";
+  return `<button class="trig${t && r.triggerOk === false ? " bad" : ""}" type="button" data-role="trig" title="${esc(title)}" aria-haspopup="menu" aria-expanded="false">${body}${ICON_CHEVRON}</button>`;
+}
+function inputOf(r, trigger) {
+  return r.kind === "click"
+    ? { kind: "click", button: r.button, at: r.at || null, intervalMs: r.intervalMs, app: r.app || null, trigger }
+    : { kind: "key", key: { label: r.label, code: r.code, vk: r.vk }, intervalMs: r.intervalMs, app: r.app || null, trigger };
 }
 
 function receive(msg) {
@@ -481,10 +532,11 @@ $("rows").addEventListener("click", (e) => {
   if (!btn || !row) return;
   if (btn.dataset.role === "toggle") send({ type: "toggle", id: row.dataset.id });
   if (btn.dataset.role === "more") menuFor === row.dataset.id ? closeMenu() : openMenu(row.dataset.id, btn);
+  if (btn.dataset.role === "trig") trigFor === row.dataset.id ? closeTrigMenu() : openTrigMenu(row.dataset.id, btn);
 });
 
 /* ── Menus ── */
-function placeMenu(menu, anchor, alignRight) {
+function placeMenu(menu, anchor, align) {   // align: "right" | "left" | "match" (same width as the anchor)
   menu.hidden = false;
   menu.style.maxHeight = "";
   const a = anchor.getBoundingClientRect();
@@ -495,8 +547,9 @@ function placeMenu(menu, anchor, alignRight) {
   const room = Math.max(80, Math.min(240, down ? below : above));
   menu.style.maxHeight = `${room}px`;
   const mh = Math.min(h, room);
-  if (alignRight) menu.style.left = `${Math.max(8, a.right - menu.getBoundingClientRect().width)}px`;
-  else { menu.style.left = `${a.left}px`; menu.style.width = `${a.width}px`; }
+  menu.style.width = align === "match" ? `${a.width}px` : "";
+  if (align === "right") menu.style.left = `${Math.max(8, a.right - menu.getBoundingClientRect().width)}px`;
+  else menu.style.left = `${Math.min(a.left, window.innerWidth - 8 - menu.getBoundingClientRect().width)}px`;
   menu.style.top = `${down ? a.bottom + 4 : a.top - 4 - mh}px`;
 }
 function menuKeys(menu, e, close) {
@@ -510,7 +563,7 @@ let menuFor = null;
 function openMenu(id, anchor) {
   closeMenu();
   menuFor = id;
-  placeMenu($("menu"), anchor, true);
+  placeMenu($("menu"), anchor, "right");
   anchor.setAttribute("aria-expanded", "true");
   anchor.closest(".row").classList.add("menu-open");
   $("menu").querySelector("button").focus();
@@ -531,12 +584,58 @@ $("menu").addEventListener("click", (e) => {
   else openAdd(state.rows.find((r) => r.id === id));
 });
 $("menu").addEventListener("keydown", (e) => menuKeys($("menu"), e, closeMenu));
+
+/* Activate chip in a row: pick Hold or Press, change or remove the key */
+let trigFor = null;
+function openTrigMenu(id, anchor) {
+  closeMenu();
+  closeTrigMenu();
+  const r = state.rows.find((x) => x.id === id);
+  if (!r) return;
+  trigFor = id;
+  const mode = r.trigger ? r.trigger.mode : null;
+  $("trigMenu").innerHTML =
+    ["hold", "toggle"].map((m) => `<button type="button" role="menuitemradio" aria-checked="${mode === m}" data-trig="${m}"><span>${MODE_NAME[m]}</span>${mode === m ? ICON_CHECK : ""}</button>`).join("") +
+    '<hr>' +
+    `<button type="button" role="menuitem" data-trig="key"><span>${r.trigger ? "Change key" : "Set key"}</span></button>` +
+    (r.trigger ? '<button type="button" role="menuitem" class="danger" data-trig="none"><span>Remove key</span></button>' : "");
+  placeMenu($("trigMenu"), anchor, "left");
+  anchor.setAttribute("aria-expanded", "true");
+  anchor.closest(".row").classList.add("menu-open");
+  ($("trigMenu").querySelector('[aria-checked="true"]') || $("trigMenu").querySelector("button")).focus();
+}
+function closeTrigMenu(refocus) {
+  if (!trigFor) return;
+  const row = document.querySelector(`.row[data-id="${CSS.escape(trigFor)}"]`);
+  if (row) {
+    row.classList.remove("menu-open");
+    const chip = row.querySelector(".trig");
+    chip.setAttribute("aria-expanded", "false");
+    if (refocus) chip.focus();
+  }
+  $("trigMenu").hidden = true;
+  trigFor = null;
+}
+$("trigMenu").addEventListener("click", (e) => {
+  const item = e.target.closest("button[data-trig]");
+  if (!item || !trigFor) return;
+  const r = state.rows.find((x) => x.id === trigFor);
+  closeTrigMenu();
+  if (!r) return;
+  const what = item.dataset.trig;
+  if (what === "none") send({ type: "edit", id: r.id, input: inputOf(r, null) });
+  else if (what === "key" || !r.trigger) openAdd(r, { listenTrigger: true, mode: what === "key" ? null : what });
+  else send({ type: "edit", id: r.id, input: inputOf(r, { hotkey: r.trigger.hotkey, mode: what }) });
+});
+$("trigMenu").addEventListener("keydown", (e) => menuKeys($("trigMenu"), e, closeTrigMenu));
+
 document.addEventListener("mousedown", (e) => {
   if (menuFor && !e.target.closest("#menu, .more")) closeMenu();
+  if (trigFor && !e.target.closest("#trigMenu, .trig")) closeTrigMenu();
   if (!$("appMenu").hidden && !e.target.closest("#appMenu, #appPick")) closeAppMenu();
 });
-window.addEventListener("blur", () => { closeMenu(); closeAppMenu(); });
-$("rows").addEventListener("scroll", () => closeMenu());
+window.addEventListener("blur", () => { closeMenu(); closeTrigMenu(); closeAppMenu(); });
+$("rows").addEventListener("scroll", () => { closeMenu(); closeTrigMenu(); });
 
 /* ── Key names ── */
 const SIDE = { Left: "Left", Right: "Right" };
@@ -572,6 +671,7 @@ let openScrim = null;
 let returnFocus = null;
 function showScrim(id, focusEl) {
   closeMenu();
+  closeTrigMenu();
   returnFocus = document.activeElement;
   openScrim = $(id);
   openScrim.hidden = false;
@@ -596,7 +696,35 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("mousedown", (e) => { if (e.target === s) (s.id === "addScrim" ? closeAdd() : closeSettings()); }));
 
 /* ── Add / Edit ── */
-const add = { editing: null, kind: "key", key: null, button: "left", where: "cursor", at: null, picking: false, unit: "ms", app: null, listening: false };
+const add = { editing: null, kind: "key", key: null, button: "left", where: "cursor", at: null, picking: false, unit: "ms", app: null, listening: false, trigger: null, mode: "hold", trigListening: false };
+
+// An activate key must not be a Start all / Stop all hotkey or a key that a row presses (the press would set it off),
+// and a row must not press a key that activates a row.
+const plain = (h) => !!h && !h.ctrl && !h.alt && !h.shift && !h.meta;
+function conflicts() {
+  const hk = state.hotkeys || {};
+  const others = state.rows.filter((r) => !add.editing || r.id !== add.editing.id);
+  const t = add.trigger;
+  const keyCode = add.kind === "key" && add.key ? add.key.code : null;
+  return {
+    trigger: !!t && (sameHotkey(t, hk.start) || sameHotkey(t, hk.stop)
+      || (plain(t) && (t.code === keyCode || others.some((r) => r.kind === "key" && r.code === t.code)))),
+    key: !!keyCode && others.some((r) => r.trigger && plain(r.trigger.hotkey) && r.trigger.hotkey.code === keyCode),
+  };
+}
+function startTrigListen() {
+  if (add.trigListening) return;
+  add.listening = false;
+  add.trigListening = true;
+  send({ type: "pauseHotkeys", on: true });
+  showAdd();
+}
+function stopTrigListen() {
+  if (!add.trigListening) return;
+  add.trigListening = false;
+  send({ type: "pauseHotkeys", on: false });
+  showAdd();
+}
 
 function setPressed(attr, value) { document.querySelectorAll(`#addDialog [data-${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset[attr] === value))); }
 function intervalMs() {
@@ -631,15 +759,26 @@ function showAdd() {
   $("pickText").className = add.picking || !add.at ? "hint" : "mono";
   $("pickText").textContent = add.picking ? "Click anywhere" : add.at ? `${add.at.x}, ${add.at.y}` : "Pick a point";
 
+  setPressed("mode", add.mode);
+  const tc = $("trigCapture");
+  tc.classList.toggle("listening", add.trigListening);
+  tc.innerHTML = add.trigListening ? '<span class="hint">Press a key</span>' : add.trigger ? esc(add.trigger.label) : '<span class="hint">None</span>';
+  const bad = conflicts();
+  tc.classList.toggle("bad", bad.trigger && !add.trigListening);
+  cap.classList.toggle("bad", bad.key && !add.listening);
+
   $("appText").textContent = add.app || "Any app";
-  $("addSave").disabled = !addReady();
+  $("addSave").disabled = !addReady() || bad.trigger || bad.key;
   fit();
 }
 function startPick() { add.picking = true; send({ type: "pickPoint" }); showAdd(); }
 function stopPick() { if (add.picking) { add.picking = false; send({ type: "pickCancel" }); } }
 
-function openAdd(row) {
+function openAdd(row, opts = {}) {
   add.editing = row;
+  add.trigger = row && row.trigger ? row.trigger.hotkey : null;
+  add.mode = opts.mode || (row && row.trigger ? row.trigger.mode : "hold");
+  add.trigListening = false;
   add.kind = row ? row.kind || "key" : "key";
   add.key = row && add.kind === "key" ? { label: row.label, code: row.code, vk: row.vk } : null;
   add.button = row && row.button ? row.button : "left";
@@ -651,10 +790,12 @@ function openAdd(row) {
   if (row && row.intervalMs >= 1000 && row.intervalMs % 1000 === 0) { $("intervalValue").value = String(row.intervalMs / 1000); add.unit = "s"; }
   else { $("intervalValue").value = row ? String(row.intervalMs) : ""; add.unit = "ms"; }
   showAdd();
-  showScrim("addScrim", row ? $("intervalValue") : $("capture"));
+  showScrim("addScrim", opts.listenTrigger ? $("trigCapture") : row ? $("intervalValue") : $("capture"));
+  if (opts.listenTrigger) startTrigListen();
 }
 function closeAdd() {
   stopPick();
+  stopTrigListen();
   add.listening = false;
   add.editing = null;
   hideScrim();
@@ -679,11 +820,25 @@ $("addDialog").addEventListener("click", (e) => {
   }
   if (b.dataset.unit) { add.unit = b.dataset.unit; showAdd(); }
   if (b.id === "pick") add.picking ? (stopPick(), showAdd()) : startPick();
-  if (b.id === "capture") { add.listening = true; showAdd(); }
+  if (b.id === "capture") { stopTrigListen(); add.listening = true; showAdd(); }
+  if (b.id === "trigCapture") startTrigListen();
+  if (b.id === "trigClear") { stopTrigListen(); add.trigger = null; showAdd(); }
+  if (b.dataset.mode) { add.mode = b.dataset.mode; showAdd(); }
   if (b.id === "appPick") $("appMenu").hidden ? openAppMenu() : closeAppMenu();
 });
 $("capture").addEventListener("blur", () => { if (add.listening) { add.listening = false; showAdd(); } });
+$("trigCapture").addEventListener("blur", stopTrigListen);
 $("addDialog").addEventListener("keydown", (e) => {
+  if (add.trigListening) {
+    if (e.key === "Tab") { stopTrigListen(); trapTab($("addDialog"), e); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") { stopTrigListen(); return; }
+    if (!e.code || MOD_CODE.test(e.code)) return;        // wait for the key that goes with the modifiers
+    add.trigger = hotkeyFrom(e);
+    stopTrigListen();
+    return;
+  }
   if (add.listening) {
     e.preventDefault();
     e.stopPropagation();
@@ -705,10 +860,12 @@ $("intervalValue").addEventListener("input", (e) => { e.target.value = e.target.
 $("addDialog").addEventListener("submit", (e) => {
   e.preventDefault();
   const ms = intervalMs();
-  if (!addReady() || !ms) return;
+  const bad = conflicts();
+  if (!addReady() || !ms || bad.trigger || bad.key) return;
+  const trigger = add.trigger ? { hotkey: add.trigger, mode: add.mode } : null;
   const input = add.kind === "click"
-    ? { kind: "click", button: add.button, at: add.where === "point" ? add.at : null, intervalMs: ms, app: add.app }
-    : { kind: "key", key: add.key, intervalMs: ms, app: add.app };
+    ? { kind: "click", button: add.button, at: add.where === "point" ? add.at : null, intervalMs: ms, app: add.app, trigger }
+    : { kind: "key", key: add.key, intervalMs: ms, app: add.app, trigger };
   if (add.editing) send({ type: "edit", id: add.editing.id, input });
   else send({ type: "add", input });
   closeAdd();
@@ -724,7 +881,7 @@ function fillAppMenu() {
     const on = (a ? a.toLowerCase() : null) === current;
     return `<button type="button" role="menuitemradio" aria-checked="${on}" data-app="${a ? esc(a) : ""}"><span>${a ? esc(a) : "Any app"}</span>${on ? ICON_CHECK : ""}</button>`;
   }).join("");
-  placeMenu($("appMenu"), $("appPick"), false);
+  placeMenu($("appMenu"), $("appPick"), "match");
 }
 function openAppMenu() {
   send({ type: "listApps" });

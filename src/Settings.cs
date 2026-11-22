@@ -42,11 +42,16 @@ internal sealed record KeyChoice(string Label, string Code, int Vk)
     }
 }
 
+// Windows identifies a shortcut by its VK and modifier mask.
+internal readonly record struct Chord(int Vk, uint Modifiers);
+
 internal sealed record Hotkey(string Label, string Code, int Vk,
                               bool Ctrl, bool Alt, bool Shift, bool Meta)
 {
     internal uint Modifiers =>
         (Alt ? 1u : 0u) | (Ctrl ? 2u : 0u) | (Shift ? 4u : 0u) | (Meta ? 8u : 0u);
+
+    internal Chord Chord => new(Vk, Modifiers);
 
     internal static Hotkey? Read(JsonElement value)
     {
@@ -88,12 +93,32 @@ internal sealed record HotkeyPair(Hotkey? Start, Hotkey? Stop)
             return null;
         }
 
-        // Windows identifies a shortcut by its VK and modifier mask.
-        if (start is not null && stop is not null &&
-            start.Vk == stop.Vk && start.Modifiers == stop.Modifiers)
+        if (start is not null && stop is not null && start.Chord == stop.Chord)
             start = null;
 
         return new HotkeyPair(start, stop);
+    }
+
+    internal bool Uses(Chord chord) => Start?.Chord == chord || Stop?.Chord == chord;
+}
+
+internal sealed record Trigger(Hotkey Hotkey, string Mode)
+{
+    internal bool Hold => Mode == "hold";
+
+    // A missing or null field means no trigger; false means the field is present but invalid.
+    internal static bool TryRead(JsonElement value, out Trigger? trigger)
+    {
+        trigger = null;
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return true;
+
+        string? mode = value.Field("mode").Text();
+        if (mode is not ("hold" or "toggle") || Hotkey.Read(value.Field("hotkey")) is not { } hotkey)
+            return false;
+
+        trigger = new Trigger(hotkey, mode);
+        return true;
     }
 }
 
@@ -101,13 +126,18 @@ internal sealed record ScreenPoint(int X, int Y);
 internal sealed record SavedWindow(int X, int Y);
 
 internal sealed record RowSpec(string Id, string Kind, string? Label, string? Code, int? Vk,
-                               string? Button, ScreenPoint? At, string? App, int IntervalMs)
+                               string? Button, ScreenPoint? At, string? App, int IntervalMs,
+                               Trigger? Trigger)
 {
     internal static RowSpec? Read(JsonElement input, string id, bool fromFile)
     {
         var intervalField = input.Field("intervalMs");
         if (intervalField.ValueKind != JsonValueKind.Number ||
             !intervalField.TryGetInt64(out long milliseconds))
+            return null;
+
+        // A saved row keeps its keys or clicks if only its trigger is unreadable.
+        if (!Trigger.TryRead(input.Field("trigger"), out var trigger) && !fromFile)
             return null;
 
         int interval = (int)Math.Clamp(milliseconds, 20L, 86_400_000L);
@@ -133,7 +163,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
         {
             var key = KeyChoice.Read(fromFile ? input : input.Field("key"));
             return key is null ? null : new RowSpec(
-                id, kind, key.Label, key.Code, key.Vk, null, null, app, interval);
+                id, kind, key.Label, key.Code, key.Vk, null, null, app, interval, trigger);
         }
 
         string? button = input.Field("button").Text();
@@ -155,7 +185,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
             return null;
         }
 
-        return new RowSpec(id, kind, null, null, null, button, point, app, interval);
+        return new RowSpec(id, kind, null, null, null, button, point, app, interval, trigger);
     }
 }
 

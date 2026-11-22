@@ -56,6 +56,31 @@ pub enum Action {
     Click { button: Button, at: Option<Point> },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Hold,
+    Toggle,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Trigger {
+    pub hotkey: Hotkey,
+    pub mode: Mode,
+}
+
+impl Trigger {
+    /// Missing or null means no trigger (`Some(None)`); anything else unreadable is `None`.
+    fn read(value: Option<&Value>) -> Option<Option<Self>> {
+        let value = match value {
+            None | Some(Value::Null) => return Some(None),
+            Some(value) => value,
+        };
+        let trigger: Self = serde_json::from_value(value.clone()).ok()?;
+        trigger.hotkey.key.valid().then_some(Some(trigger))
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Input {
@@ -63,6 +88,7 @@ pub struct Input {
     pub action: Action,
     pub interval_ms: i64,
     pub app: Option<String>,
+    pub trigger: Option<Trigger>,
 }
 
 impl Input {
@@ -101,7 +127,13 @@ impl Input {
             Some(name) => app_name(name.as_str()?),
         };
         let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(20, 86_400_000);
-        Some(Self { action, interval_ms, app })
+        // A saved row keeps its keys or clicks when only its trigger is unreadable.
+        let trigger = match Trigger::read(value.get("trigger")) {
+            Some(trigger) => trigger,
+            None if saved_row => None,
+            None => return None,
+        };
+        Some(Self { action, interval_ms, app, trigger })
     }
 }
 
@@ -137,7 +169,7 @@ impl Hotkey {
         }
     }
 
-    fn same_binding(&self, other: &Self) -> bool {
+    pub fn same_binding(&self, other: &Self) -> bool {
         let same_key = if cfg!(windows) {
             self.key.vk == other.key.vk
         } else {

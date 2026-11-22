@@ -15,10 +15,10 @@ mod keys;
 mod desktop;
 
 use engine::Engine;
-use hotkeys::Bindings;
+use hotkeys::{Bindings, Hit};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use settings::{Hotkeys, Input, Position, Settings};
+use settings::{Hotkey, Hotkeys, Input, Position, Settings};
 use std::{
     collections::BTreeMap,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -53,17 +53,24 @@ enum Message {
     ListApps,
     PickPoint,
     PickCancel,
-    Fit { height: i64 },
+    Fit {
+        height: i64,
+        #[serde(default)]
+        width: Option<i64>,
+    },
     OpenAccessSettings,
     #[serde(skip)]
     Activate,
     #[serde(skip)]
     Publish,
     #[serde(skip)]
-    PluginHotkey { slot: usize, generation: u64 },
+    PluginHotkey { token: u64, pressed: bool },
     #[cfg(windows)]
     #[serde(skip)]
-    NativeHotkey { slot: usize, signature: u32 },
+    NativeHotkey { id: usize, signature: u32 },
+    #[cfg(windows)]
+    #[serde(skip)]
+    Released { token: u64 },
 }
 
 #[derive(Clone)]
@@ -136,6 +143,7 @@ struct Host {
     engine: Engine,
     alarm: Alarm,
     position: Option<Position>,
+    width: i64,
     height: i64,
     refit: bool,
     geometry_changed: bool,
@@ -161,7 +169,7 @@ impl Host {
         let window = app.get_webview_window("main").expect("configured main window");
         let settings = Settings::load();
         let height = window::initial_height(settings.rows.len());
-        window::initialize(&window, settings.window, height);
+        window::initialize(&window, settings.window, window::WIDTH, height);
         let position = window::position(&window).or(settings.window);
         let _ = window.set_always_on_top(settings.pinned);
         let pinned = window.is_always_on_top().unwrap_or(settings.pinned);
@@ -171,13 +179,15 @@ impl Host {
             settings.switch_stop, move || inbox.post(Message::Publish),
         );
         let mut bindings = Bindings::new(&window);
-        bindings.apply(app, &settings.hotkeys, false);
+        let triggers = engine.rows().trigger_keys();
+        bindings.apply(app, &settings.hotkeys, &triggers, false);
         let now = Instant::now();
         Self {
             window,
             engine,
             alarm: Alarm::new(app.clone()),
             position,
+            width: window::WIDTH,
             height,
             refit: false,
             geometry_changed: true,
@@ -248,10 +258,12 @@ impl Host {
         if !self.ready || self.closed {
             return;
         }
+        let bindings = &self.bindings;
         let (rows, running) = {
             let mut rows = self.engine.rows();
-            (rows.snapshot(), rows.any_running())
+            (rows.snapshot(|key| bindings.trigger_ok(key)), rows.any_running())
         };
+        let (start_ok, stop_ok) = bindings.ok();
         if running {
             self.counts_at.get_or_insert_with(|| Instant::now() + COUNTS);
         } else {
@@ -265,7 +277,7 @@ impl Host {
             "pinned": self.pinned,
             "rows": rows,
             "hotkeys": self.hotkeys,
-            "hotkeyOk": { "start": self.bindings.ok[0], "stop": self.bindings.ok[1] },
+            "hotkeyOk": { "start": start_ok, "stop": stop_ok },
             "switchStop": self.switch_stop
         }));
     }
@@ -297,8 +309,35 @@ impl Host {
         }
     }
 
-    fn rebind(&mut self) {
-        self.bindings.apply(self.window.app_handle(), &self.hotkeys, self.paused);
+    /// Re-registers the global keys; true when that ended a hold (rows stopped).
+    fn rebind(&mut self) -> bool {
+        let triggers = self.engine.rows().trigger_keys();
+        let released = self.bindings.apply(
+            self.window.app_handle(), &self.hotkeys, &triggers, self.paused,
+        );
+        // A trigger that is no longer registered cannot report its release.
+        for key in &released {
+            self.engine.change(|rows| rows.trigger_up(key));
+        }
+        !released.is_empty()
+    }
+
+    fn trigger(&mut self, key: &Hotkey) {
+        let starts = self.engine.rows().trigger_starts(key);
+        if !starts || self.allow_start() {
+            self.engine.change(|rows| rows.trigger_down(key));
+        }
+    }
+
+    fn hit(&mut self, hit: Option<Hit>) -> bool {
+        match hit {
+            None => return false,
+            Some(Hit::StartAll) => self.all(true),
+            Some(Hit::StopAll) => self.all(false),
+            Some(Hit::Down(key)) => self.trigger(&key),
+            Some(Hit::Up(key)) => self.engine.change(|rows| rows.trigger_up(&key)),
+        }
+        true
     }
 
     fn save(&self) -> bool {
@@ -400,31 +439,41 @@ impl Host {
             }
             Message::StartAll => self.all(true),
             Message::StopAll => self.all(false),
-            Message::PluginHotkey { slot, generation } => {
-                if !self.bindings.accepts_plugin(slot, generation) {
+            Message::PluginHotkey { token, pressed } => {
+                let hit = self.bindings.plugin_event(token, pressed);
+                if !self.hit(hit) {
                     return;
                 }
-                self.all(slot == 0);
             }
             #[cfg(windows)]
-            Message::NativeHotkey { slot, signature } => {
-                if !self.bindings.accepts_native(slot, signature) {
+            Message::NativeHotkey { id, signature } => {
+                let hit = self.bindings.native_event(id, signature);
+                if !self.hit(hit) {
                     return;
                 }
-                self.all(slot == 0);
+            }
+            #[cfg(windows)]
+            Message::Released { token } => {
+                let hit = self.bindings.released(token);
+                if !self.hit(hit) {
+                    return;
+                }
             }
             Message::Add { input } => {
                 let Some(input) = Input::from_page(&input) else { return };
                 self.engine.change(|rows| rows.add(input));
+                self.rebind();
                 self.dirty();
             }
             Message::Edit { id, input } => {
                 let Some(input) = Input::from_page(&input) else { return };
                 self.engine.change(|rows| rows.edit(&id, input));
+                self.rebind();
                 self.dirty();
             }
             Message::Remove { id } => {
                 self.engine.change(|rows| rows.remove(&id));
+                self.rebind();
                 self.dirty();
             }
             Message::Settings { hotkeys, switch_stop } => {
@@ -437,8 +486,8 @@ impl Host {
             }
             Message::PauseHotkeys { on } => {
                 self.paused = on;
-                self.rebind();
-                if on {
+                // While paused, report nothing unless a hold had to end.
+                if !self.rebind() && on {
                     return;
                 }
             }
@@ -462,8 +511,11 @@ impl Host {
                 self.cancel_pick();
                 return;
             }
-            Message::Fit { height } => {
+            Message::Fit { height, width } => {
                 self.height = height.max(1);
+                if let Some(width) = width {
+                    self.width = width.max(1);
+                }
                 self.refit = true;
                 return;
             }
@@ -479,7 +531,7 @@ impl Host {
         let now = Instant::now();
         if self.refit && !self.window.is_minimized().unwrap_or(true) {
             self.refit = false;
-            window::fit(&self.window, self.height);
+            window::fit(&self.window, self.width, self.height);
             self.geometry_changed = true;
         }
         if self.show_at.is_some_and(|t| t <= now) {

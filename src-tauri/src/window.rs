@@ -1,6 +1,9 @@
 use crate::settings::Position;
 use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
+/// Content width in CSS px until the page's `fit` says otherwise.
+pub const WIDTH: i64 = 800;
+
 pub fn initial_height(rows: usize) -> i64 {
     let body = if rows == 0 { 96 } else { (rows as i64).saturating_mul(48) };
     160i64.saturating_add(body)
@@ -36,32 +39,32 @@ fn move_to(window: &WebviewWindow, p: PhysicalPosition<i32>, monitor: &Monitor) 
     }
 }
 
-pub fn initialize(window: &WebviewWindow, saved: Option<Position>, height: i64) {
+pub fn initialize(window: &WebviewWindow, saved: Option<Position>, width: i64, height: i64) {
     frame(window);
     if let Some(p) = saved {
         let monitor = window.available_monitors().ok()
             .and_then(|list| list.into_iter().find(|m| contains(m, p)));
         if let Some(monitor) = monitor {
             move_to(window, PhysicalPosition::new(p.x, p.y), &monitor);
-            fit_on(window, &monitor, p, height);
+            fit_on(window, &monitor, p, width, height);
             return;
         }
     }
-    fit(window, height);
+    fit(window, width, height);
     let _ = window.center();
-    fit(window, height);
+    fit(window, width, height);
 }
 
-pub fn fit(window: &WebviewWindow, height: i64) {
+pub fn fit(window: &WebviewWindow, width: i64, height: i64) {
     let Some(p) = position(window) else { return };
     let monitor = window.current_monitor().ok().flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     if let Some(monitor) = monitor {
-        fit_on(window, &monitor, p, height);
+        fit_on(window, &monitor, p, width, height);
     }
 }
 
-fn fit_on(window: &WebviewWindow, monitor: &Monitor, p: Position, height: i64) {
+fn fit_on(window: &WebviewWindow, monitor: &Monitor, p: Position, width: i64, height: i64) {
     let (Ok(outer), Ok(inner)) = (window.outer_size(), window.inner_size()) else { return };
     let work = monitor.work_area();
     if work.size.width == 0 || work.size.height == 0 {
@@ -71,7 +74,7 @@ fn fit_on(window: &WebviewWindow, monitor: &Monitor, p: Position, height: i64) {
     let frame_w = outer.width.saturating_sub(inner.width);
     let frame_h = outer.height.saturating_sub(inner.height);
     let scale = monitor.scale_factor();
-    let width = ((720.0 * scale).round() as u32)
+    let width = ((width.max(1) as f64 * scale).round() as u32)
         .min(work.size.width.saturating_sub(frame_w)).max(1);
     let height = ((height.max(1) as f64 * scale).round() as u32)
         .min(work.size.height.saturating_sub(frame_h)).max(1);

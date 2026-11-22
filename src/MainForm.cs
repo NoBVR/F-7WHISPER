@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -15,6 +16,9 @@ internal sealed class MainForm : Form
     private const string PageUrl = "https://app.f7whisper.local/index.html";
     private const int StartId = 6;
     private const int StopId = 7;
+    private const int FirstTriggerId = 0x100;
+    private const int LastTriggerId = 0xBFFF;
+    private const int WidthCss = 800;
     private static readonly Color Background = Color.FromArgb(10, 10, 10);
     private static readonly string AppVersion =
         typeof(MainForm).Assembly.GetName().Version!.ToString(3);
@@ -26,6 +30,11 @@ internal sealed class MainForm : Form
     private readonly KeyEngine _engine;
     private readonly Screen _initialScreen;
     private readonly Point? _initialPosition;
+
+    // Registered row triggers by hotkey id; one id per distinct chord.
+    private readonly Dictionary<int, Chord> _triggerIds = new();
+    // Last registration result per chord, kept through a pause so the page shows no false error.
+    private Dictionary<Chord, bool> _triggerOk = new();
 
     private HotkeyPair _hotkeys;
     private bool _startOk;
@@ -39,6 +48,7 @@ internal sealed class MainForm : Form
     private bool _closing;
     private bool _disposed;
     private int? _fitHeight;
+    private int? _fitWidth;
     private Size _fixedSize;
 
     internal MainForm()
@@ -85,7 +95,7 @@ internal sealed class MainForm : Form
             if (!_ready || _closing)
                 return;
 
-            if (_engine.TakeSwitchStopNotification())
+            if (_engine.TakeStateNotification())
                 SendState();
             else if (_engine.TakeChangedCounts() is { } counts)
                 Post(new { type = "counts", counts });
@@ -108,7 +118,7 @@ internal sealed class MainForm : Form
         int rows = _engine.RowCount;
         long heightCss = _fitHeight ?? (40L + 56 + 36 + (rows == 0 ? 96 : 48L * rows) + 28);
         double scale = (dpi > 0 ? dpi : 96) / 96.0;
-        int width = (int)Math.Clamp(Math.Round(720 * scale), 1, area.Width);
+        int width = (int)Math.Clamp(Math.Round((_fitWidth ?? WidthCss) * scale), 1, area.Width);
         int height = (int)Math.Clamp(Math.Round(heightCss * scale), 1, area.Height);
         int x = location?.X ?? area.Left + (area.Width - width) / 2;
         int y = location?.Y ?? area.Top + (area.Height - height) / 2;
@@ -156,23 +166,79 @@ internal sealed class MainForm : Form
     {
         if (_startOk) Native.UnregisterHotKey(Handle, StartId);
         if (_stopOk) Native.UnregisterHotKey(Handle, StopId);
+        foreach (int id in _triggerIds.Keys)
+            Native.UnregisterHotKey(Handle, id);
         _startOk = false;
         _stopOk = false;
+        _triggerIds.Clear();
     }
 
     private void RegisterHotkeys()
     {
         UnregisterHotkeys();
-        if (_paused || _closing || !IsHandleCreated)
-            return;
-
-        _startOk = Register(StartId, _hotkeys.Start);
-        _stopOk = Register(StopId, _hotkeys.Stop);
+        if (!_paused && !_closing && IsHandleCreated)
+        {
+            _startOk = Register(StartId, _hotkeys.Start?.Chord);
+            _stopOk = Register(StopId, _hotkeys.Stop?.Chord);
+        }
+        RegisterTriggers();
     }
 
-    private bool Register(int id, Hotkey? key) =>
-        key is not null &&
+    // Brings the row-trigger registrations in line with the rows; unchanged chords stay registered.
+    private void RegisterTriggers()
+    {
+        bool active = !_paused && !_closing && IsHandleCreated;
+        var wanted = _engine.TriggerChords();
+        var ok = new Dictionary<Chord, bool>();
+        var registered = new HashSet<Chord>();
+
+        foreach (var (id, chord) in _triggerIds.ToArray())
+        {
+            if (active && !_hotkeys.Uses(chord) && Array.IndexOf(wanted, chord) >= 0)
+            {
+                registered.Add(chord);
+                continue;
+            }
+            Native.UnregisterHotKey(Handle, id);
+            _triggerIds.Remove(id);
+        }
+
+        int nextId = FirstTriggerId;
+        foreach (var chord in wanted)
+        {
+            bool registrationOk;
+            if (_hotkeys.Uses(chord))
+            {
+                // Start all / Stop all keeps the key.
+                registrationOk = false;
+            }
+            else if (!active)
+            {
+                registrationOk = _triggerOk.GetValueOrDefault(chord, true);
+            }
+            else if (registered.Contains(chord))
+            {
+                registrationOk = true;
+            }
+            else
+            {
+                while (_triggerIds.ContainsKey(nextId))
+                    nextId++;
+                registrationOk = nextId <= LastTriggerId && Register(nextId, chord);
+                if (registrationOk)
+                    _triggerIds.Add(nextId, chord);
+            }
+            ok[chord] = registrationOk;
+        }
+
+        _triggerOk = ok;
+    }
+
+    private bool Register(int id, Chord? chord) =>
+        chord is { } key &&
         Native.RegisterHotKey(Handle, id, Native.ModNoRepeat | key.Modifiers, (uint)key.Vk);
+
+    private bool TriggerOk(Chord chord) => _triggerOk.GetValueOrDefault(chord);
 
     protected override async void OnShown(EventArgs e)
     {
@@ -277,10 +343,15 @@ internal sealed class MainForm : Form
                     return;
 
                 case "fit":
-                    if (message.Field("height").Integer() is int height && height > 0)
+                    var widthField = message.Field("width");
+                    int? fitWidth = widthField.Integer();
+                    if (message.Field("height").Integer() is int height && height > 0 &&
+                        (widthField.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null ||
+                         fitWidth > 0))
                     {
                         // WebView2 delivers this callback on its owning WinForms UI thread.
                         _fitHeight = height;
+                        _fitWidth = fitWidth;
                         FitWindow();
                     }
                     return;
@@ -311,6 +382,7 @@ internal sealed class MainForm : Form
                     if (RowSpec.Read(message.Field("input"), "", fromFile: false) is not { } added)
                         return;
                     _engine.Add(added);
+                    RegisterTriggers();
                     if (_fitHeight is null) FitWindow();
                     break;
 
@@ -318,10 +390,12 @@ internal sealed class MainForm : Form
                     if (RowSpec.Read(message.Field("input"), id, fromFile: false) is not { } edited)
                         return;
                     _engine.Edit(edited);
+                    RegisterTriggers();
                     break;
 
                 case "remove" when id is not null:
                     _engine.Remove(id);
+                    RegisterTriggers();
                     if (_fitHeight is null) FitWindow();
                     break;
 
@@ -455,6 +529,20 @@ internal sealed class MainForm : Form
                 }
                 m.Result = 0;
                 return;
+
+            case Native.WmHotkey when _triggerIds.TryGetValue((int)m.WParam, out var trigger):
+                uint pressed = unchecked((uint)(long)m.LParam);
+                if (!_closing && !_paused && (pressed >> 16) == (uint)trigger.Vk &&
+                    (pressed & 0x0f) == trigger.Modifiers && _engine.Activate(trigger))
+                    SendState();
+                m.Result = 0;
+                return;
+
+            case Native.WmStateChanged:
+                if (_ready && !_closing && _engine.TakeStateNotification())
+                    SendState();
+                m.Result = 0;
+                return;
         }
 
         base.WndProc(ref m);
@@ -501,7 +589,7 @@ internal sealed class MainForm : Form
             platform = "windows",
             accessOk = true,
             pinned = _pinned,
-            rows = _engine.Snapshot(),
+            rows = _engine.Snapshot(TriggerOk),
             hotkeys = _hotkeys,
             hotkeyOk = new { start = _startOk, stop = _stopOk },
             switchStop = _engine.SwitchStop

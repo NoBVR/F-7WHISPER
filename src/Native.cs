@@ -20,6 +20,7 @@ internal static class Native
     internal const int WmSysCommand = 0x0112;
     internal const int WmDpiChanged = 0x02E0;
     internal const int WmHotkey = 0x0312;
+    internal const int WmStateChanged = 0x8001; // WM_APP + 1
     internal const uint ModNoRepeat = 0x4000;
 
     internal static void ApplyFrame(nint hwnd)
@@ -51,6 +52,11 @@ internal static class Native
     internal static void RestoreWindow(nint hwnd) => ShowWindow(hwnd, 9); // SW_RESTORE
 
     internal static bool LeftButtonDown => GetAsyncKeyState(1) < 0;
+
+    internal static bool KeyDown(int vk) => GetAsyncKeyState(vk) < 0;
+
+    // Safe from any thread; fails harmlessly once the window is gone.
+    internal static void PostStateChanged(nint hwnd) => PostMessageW(hwnd, WmStateChanged, 0, 0);
 
     internal static void BeginDrag(nint hwnd)
     {
@@ -333,6 +339,9 @@ internal static class Native
 
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern nint SendMessageW(nint hwnd, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern bool PostMessageW(nint hwnd, uint message, nint wParam, nint lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint vk);

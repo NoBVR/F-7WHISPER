@@ -1,7 +1,7 @@
 use crate::{
     desktop,
     keys::{self, Keyboard, Stroke},
-    settings::{app_name, same_name, Action, Button, Input, Point, RowSpec},
+    settings::{app_name, same_name, Action, Button, Hotkey, Input, Mode, Point, RowSpec},
     wait::{Timer, Wake},
 };
 use serde::Serialize;
@@ -39,6 +39,10 @@ impl Output {
             Self::Mouse(button, at) => desktop::click(button, at, down),
         }
     }
+}
+
+fn bound(spec: &RowSpec, key: &Hotkey, mode: Mode) -> bool {
+    spec.input.trigger.as_ref().is_some_and(|t| t.mode == mode && t.hotkey.same_binding(key))
 }
 
 #[derive(Serialize)]
@@ -123,11 +127,44 @@ impl Rows {
         self.rows.iter().map(|r| r.spec.clone()).collect()
     }
 
-    pub fn snapshot(&mut self) -> Value {
+    pub fn snapshot(&mut self, trigger_ok: impl Fn(&Hotkey) -> bool) -> Value {
         for row in &mut self.rows {
             row.reported = row.count;
         }
-        serde_json::to_value(&self.rows).expect("serializable row fields")
+        let mut value = serde_json::to_value(&self.rows).expect("serializable row fields");
+        if let Value::Array(items) = &mut value {
+            for (item, row) in items.iter_mut().zip(&self.rows) {
+                if let Value::Object(fields) = item {
+                    let ok = row.spec.input.trigger.as_ref().is_some_and(|t| trigger_ok(&t.hotkey));
+                    fields.insert("triggerOk".into(), Value::Bool(ok));
+                }
+            }
+        }
+        value
+    }
+
+    /// Every row's activation key, duplicates included.
+    pub fn trigger_keys(&self) -> Vec<Hotkey> {
+        self.rows.iter()
+            .filter_map(|r| r.spec.input.trigger.as_ref().map(|t| t.hotkey.clone()))
+            .collect()
+    }
+
+    /// Whether pressing `key` would start a row (so the press needs permission to send).
+    pub fn trigger_starts(&self, key: &Hotkey) -> bool {
+        self.rows.iter().any(|r| {
+            !r.running && (bound(&r.spec, key, Mode::Toggle) || bound(&r.spec, key, Mode::Hold))
+        })
+    }
+
+    pub fn trigger_down(&mut self, key: &Hotkey) {
+        let start = self.rows.iter().any(|r| !r.running && bound(&r.spec, key, Mode::Toggle));
+        self.set_running_where(|spec| bound(spec, key, Mode::Toggle), start);
+        self.set_running_where(|spec| bound(spec, key, Mode::Hold), true);
+    }
+
+    pub fn trigger_up(&mut self, key: &Hotkey) {
+        self.set_running_where(|spec| bound(spec, key, Mode::Hold), false);
     }
 
     pub fn counts(&mut self) -> HashMap<String, u64> {
@@ -219,19 +256,26 @@ impl Rows {
     }
 
     pub fn set_running(&mut self, id: Option<&str>, running: bool) {
+        self.set_running_where(|spec| id.is_none_or(|id| id == spec.id), running);
+    }
+
+    fn set_running_where(&mut self, select: impl Fn(&RowSpec) -> bool, running: bool) {
         let was_running = self.any_running();
         let now = Instant::now();
-        for row in &mut self.rows {
-            if id.is_some_and(|id| id != row.spec.id) {
-                continue;
-            }
+        for row in self.rows.iter_mut().filter(|r| select(&r.spec)) {
             if running && !row.running {
                 row.due = now;
             }
             row.running = running;
         }
         if !running {
-            self.release(id);
+            // Release what the stopped rows hold, plus anything left by a removed row.
+            let (rows, keyboard) = (&self.rows, &mut self.keyboard);
+            self.held.retain(|owner, held| {
+                let stopped = rows.iter().find(|r| r.spec.id == *owner)
+                    .is_none_or(|r| select(&r.spec));
+                !stopped || !held.release(keyboard)
+            });
         }
         if !self.any_running() {
             self.target = None;

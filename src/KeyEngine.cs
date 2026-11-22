@@ -38,6 +38,7 @@ internal sealed class KeyEngine : IDisposable
     }
 
     private static readonly long WatchPeriod = Milliseconds(75);
+    private static readonly long HoldPeriod = Milliseconds(10);
     private static readonly uint OwnPid = (uint)Environment.ProcessId;
 
     private readonly object _gate = new();
@@ -45,12 +46,15 @@ internal sealed class KeyEngine : IDisposable
     private readonly List<Row> _rows;
     // A removed or reconfigured row can still owe its original release.
     private readonly List<Row> _held = new();
+    // Trigger keys whose hold-mode rows run until the main key is released.
+    private readonly List<Chord> _holds = new();
     private readonly Thread _thread;
     private nint _owner;
     private bool _switchStop;
-    private bool _stoppedOnSwitch;
+    private bool _stateChanged;
     private uint _targetPid;
     private long _watchDue = long.MaxValue;
+    private long _holdDue = long.MaxValue;
     private bool _exiting;
 
     internal KeyEngine(RowSpec[] rows, bool switchStop)
@@ -166,6 +170,107 @@ internal sealed class KeyEngine : IDisposable
         }
     }
 
+    internal Chord[] TriggerChords()
+    {
+        lock (_gate)
+        {
+            return _rows.Where(row => row.Spec.Trigger is not null)
+                        .Select(row => row.Spec.Trigger!.Hotkey.Chord).Distinct().ToArray();
+        }
+    }
+
+    // A trigger key went down (auto-repeat is already filtered out). Returns true if any row changed.
+    internal bool Activate(Chord chord)
+    {
+        lock (_gate)
+        {
+            bool changed = false;
+            bool hold = false;
+            bool anyToggle = false;
+            bool start = false;
+            foreach (var row in _rows)
+            {
+                if (row.Spec.Trigger is not { } trigger || trigger.Hotkey.Chord != chord)
+                    continue;
+
+                if (trigger.Hold)
+                {
+                    hold = true;
+                    changed |= !row.Running;
+                    SetRunning(row, true);
+                }
+                else
+                {
+                    anyToggle = true;
+                    start |= !row.Running;
+                }
+            }
+
+            if (anyToggle)
+            {
+                foreach (var row in _rows)
+                {
+                    if (row.Spec.Trigger is { Hold: false } trigger && trigger.Hotkey.Chord == chord &&
+                        row.Running != start)
+                    {
+                        changed = true;
+                        SetRunning(row, start);
+                    }
+                }
+            }
+
+            if (hold && !_holds.Contains(chord))
+            {
+                _holds.Add(chord);
+                if (_holdDue == long.MaxValue)
+                    _holdDue = Stopwatch.GetTimestamp() + HoldPeriod;
+            }
+
+            if (changed)
+                UpdateWatch();
+            _wake.Set();
+            return changed;
+        }
+    }
+
+    // GetAsyncKeyState still sees a key whose press RegisterHotKey swallowed, and it
+    // reads as up when the user leaves the input desktop, so a hold cannot get stuck.
+    private void PollHolds()
+    {
+        bool changed = false;
+        for (int i = _holds.Count - 1; i >= 0; i--)
+        {
+            var chord = _holds[i];
+            if (Native.KeyDown(chord.Vk))
+                continue;
+
+            _holds.RemoveAt(i);
+            foreach (var row in _rows)
+            {
+                if (row.Running && row.Spec.Trigger is { Hold: true } trigger &&
+                    trigger.Hotkey.Chord == chord)
+                {
+                    changed = true;
+                    SetRunning(row, false);
+                }
+            }
+        }
+
+        _holdDue = _holds.Count == 0 ? long.MaxValue : Stopwatch.GetTimestamp() + HoldPeriod;
+        if (changed)
+        {
+            UpdateWatch();
+            NotifyChanged();
+        }
+    }
+
+    private void NotifyChanged()
+    {
+        _stateChanged = true;
+        if (_owner != 0)
+            Native.PostStateChanged(_owner);
+    }
+
     private Row? Find(string id) => _rows.Find(row => row.Spec.Id == id);
 
     private void SetRunning(Row row, bool running)
@@ -218,16 +323,17 @@ internal sealed class KeyEngine : IDisposable
             return false;
 
         StopAllLocked();
-        _stoppedOnSwitch = true;
+        NotifyChanged();
         return true;
     }
 
-    internal bool TakeSwitchStopNotification()
+    // Set when the scheduler itself stopped rows (switch-stop or a released hold key).
+    internal bool TakeStateNotification()
     {
         lock (_gate)
         {
-            bool pending = _stoppedOnSwitch;
-            _stoppedOnSwitch = false;
+            bool pending = _stateChanged;
+            _stateChanged = false;
             return pending;
         }
     }
@@ -238,7 +344,7 @@ internal sealed class KeyEngine : IDisposable
             return _rows.Select(row => row.Spec).ToArray();
     }
 
-    internal object[] Snapshot()
+    internal object[] Snapshot(Func<Chord, bool> triggerOk)
     {
         lock (_gate)
         {
@@ -249,7 +355,9 @@ internal sealed class KeyEngine : IDisposable
                 return (object)new
                 {
                     spec.Id, spec.Kind, spec.Label, spec.Code, spec.Vk,
-                    spec.Button, spec.At, spec.App, spec.IntervalMs, row.Running, row.Count
+                    spec.Button, spec.At, spec.App, spec.IntervalMs, spec.Trigger,
+                    TriggerOk = spec.Trigger is { } trigger && triggerOk(trigger.Hotkey.Chord),
+                    row.Running, row.Count
                 };
             }).ToArray();
         }
@@ -310,7 +418,11 @@ internal sealed class KeyEngine : IDisposable
             ObserveForeground(Native.ForegroundPid(_owner));
         }
 
-        long next = _watchDue;
+        // Before pressing, so a released hold key gets no extra press.
+        if (_holdDue <= now)
+            PollHolds();
+
+        long next = Math.Min(_watchDue, _holdDue);
         uint imagePid = 0;
         string? imageName = null;
         foreach (var row in _rows)
@@ -333,7 +445,7 @@ internal sealed class KeyEngine : IDisposable
             uint pid = Native.ForegroundPid(_owner);
             if (ObserveForeground(pid))
             {
-                next = long.MaxValue;
+                next = _holdDue;
                 break;
             }
             if (pid == 0 || pid == OwnPid || row.Down)
