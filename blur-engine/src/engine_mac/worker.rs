@@ -92,8 +92,16 @@ impl TimerResolutionGuard {
             NSActivityOptions::UserInitiated | NSActivityOptions::LatencyCritical,
             &NSString::from_str("Running a Blur input row"),
         );
-        unsafe {
-            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+        // macOS: the counterpart of Blur's 1 ms timer request. macOS coalesces ordinary
+        // (even user-interactive QoS) sleeps, so sleep(1 ms) took ~5 ms on a CI Mac; a
+        // Mach time-constraint thread wakes within ~20 µs (mac_timing example).
+        let status = set_thread_policy(true);
+        if status != libc::KERN_SUCCESS {
+            log::warn!(
+                "[Timer] {} (kern_return_t: {})",
+                AppError::TimerPrecision,
+                status
+            );
         }
         Self(activity)
     }
@@ -101,8 +109,46 @@ impl TimerResolutionGuard {
 
 impl Drop for TimerResolutionGuard {
     fn drop(&mut self) {
-        // macOS: end exactly the activity acquired by this guard.
+        // macOS: back to the standard policy, then end exactly the activity acquired by this guard.
+        set_thread_policy(false);
         unsafe { NSProcessInfo::processInfo().endActivity(&self.0) };
+    }
+}
+
+// macOS: a 1 ms period with up to 0.5 ms of work, preemptible (the values mac_timing measured),
+// or the standard policy again. Applies to the calling thread, which runs the click loop.
+#[allow(deprecated)] // libc's Mach bindings are deprecated in favour of the mach2 crate.
+fn set_thread_policy(real_time: bool) -> libc::kern_return_t {
+    extern "C" {
+        fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
+    }
+    const THREAD_STANDARD_POLICY: u32 = 1; // <mach/thread_policy.h>
+    const KERN_FAILURE: libc::kern_return_t = 5; // <mach/kern_return.h>
+    let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+    if unsafe { libc::mach_timebase_info(&mut tb) } != libc::KERN_SUCCESS || tb.numer == 0 {
+        return KERN_FAILURE;
+    }
+    let ticks = |ns: u64| (ns * u64::from(tb.denom) / u64::from(tb.numer)) as u32;
+    let mut policy = libc::thread_time_constraint_policy_data_t {
+        period: ticks(1_000_000),
+        computation: ticks(500_000),
+        constraint: ticks(1_000_000),
+        preemptible: 1,
+    };
+    unsafe {
+        let port = libc::mach_thread_self();
+        let status = if real_time {
+            libc::thread_policy_set(
+                port,
+                libc::THREAD_TIME_CONSTRAINT_POLICY as _,
+                (&raw mut policy).cast(),
+                libc::THREAD_TIME_CONSTRAINT_POLICY_COUNT,
+            )
+        } else {
+            libc::thread_policy_set(port, THREAD_STANDARD_POLICY as _, (&raw mut policy).cast(), 0)
+        };
+        mach_port_deallocate(libc::mach_task_self(), port);
+        status
     }
 }
 
