@@ -132,13 +132,13 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
 .field { display: grid; gap: 6px; margin-bottom: 12px; }
 .field > span { font-size: 13px; color: var(--muted); }
 .line { display: flex; gap: 8px; height: 36px; }
-.box { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: 12px; background: var(--field); font-size: 14px; font-weight: 500; text-align: left; white-space: nowrap; overflow: hidden; corner-shape: squircle; }
+.box { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 9999px; background: var(--field); font-size: 14px; font-weight: 500; text-align: left; white-space: nowrap; overflow: hidden; corner-shape: round; }
 .box .hint { color: var(--faint); font-weight: 400; }
 .box.listening { box-shadow: var(--focus); }
 .box .mono { font: 14px "Geist Mono", ui-monospace, monospace; }
 .box.select { justify-content: space-between; }
 .box.select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.line input { flex: 1 1 auto; min-width: 0; height: 36px; padding: 0 12px; border: 0; border-radius: 12px; background: var(--field); color: var(--text); font: 14px "Geist Mono", ui-monospace, monospace; corner-shape: squircle; user-select: text; }
+.line input { flex: 1 1 0; min-width: 0; width: 0; height: 36px; padding: 0 16px; border: 0; border-radius: 9999px; background: var(--field); color: var(--text); font: 14px "Geist Mono", ui-monospace, monospace; corner-shape: round; user-select: text; }
 .line input::placeholder { color: var(--faint); }
 .seg { flex: none; display: inline-flex; align-self: center; padding: 3px; border-radius: 9999px; background: var(--field); }
 .seg button { height: 30px; padding: 0 14px; border-radius: 9999px; color: var(--muted); font-size: 13px; font-weight: 500; }
