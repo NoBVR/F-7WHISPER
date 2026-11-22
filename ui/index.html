@@ -51,14 +51,14 @@ svg { flex: none; display: block; }
 body:not(.mac)::before { content: ""; position: fixed; z-index: 80; top: 1px; left: 0; right: 0; height: 1px; background: rgba(255, 255, 255, 0.06); pointer-events: none; }
 
 /* ── Title bar ── */
-.titlebar { flex: none; display: flex; align-items: center; height: 40px; }
+.titlebar { flex: none; display: flex; align-items: center; height: 32px; }   /* Windows 11's standard title bar height */
 .title { flex: 1 1 auto; min-width: 0; align-self: stretch; display: flex; align-items: center; padding-left: 16px; font-size: 13px; font-weight: 600; }
-.ghost { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9999px; color: var(--muted); }
+.ghost { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9999px; color: var(--muted); }
 .ghost:hover { background: var(--fill); color: var(--text); }
 .gear { margin-right: 2px; }
 .pin { margin-right: 6px; }
 .pin[aria-pressed="true"] { background: rgba(255, 255, 255, 0.1); color: var(--text); }
-.cap { display: grid; place-items: center; width: 46px; height: 40px; color: var(--text); corner-shape: square; }
+.cap { display: grid; place-items: center; width: 46px; height: 32px; color: var(--text); corner-shape: square; }
 .cap:hover { background: rgba(255, 255, 255, 0.08); }
 .cap.close:hover { background: #c42b1c; color: #fff; }
 /* macOS: native traffic lights sit over the left of the bar */
@@ -68,12 +68,13 @@ body.mac .title { padding-left: 84px; }
 body.mac .pin { margin-right: 16px; }
 
 /* ── macOS Accessibility notice ── */
-.notice { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 16px 12px; padding: 6px 6px 6px 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
+.notice { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 16px 16px; padding: 6px 6px 6px 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
 .notice span { flex: 1 1 auto; min-width: 0; }
 .notice .btn { height: 28px; padding: 0 12px; font-size: 13px; }
 
 /* ── Toolbar ── */
-.toolbar { flex: none; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 16px; }
+/* 4 px clears the caption buttons' hover fill and puts the buttons ~16 px under the title text: the same gap as the sides and the table */
+.toolbar { flex: none; display: flex; align-items: center; gap: 8px; height: 52px; padding: 4px 16px 16px; }
 .spacer { flex: 1 1 auto; align-self: stretch; }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 16px 0 14px; border-radius: 9999px; background: var(--fill); font-size: 14px; font-weight: 500; white-space: nowrap; }
 .btn:hover { background: var(--fill-hover); }
@@ -418,8 +419,8 @@ const WIDTH = 800;
 let lastFit = 0;
 function neededHeight() {
   const n = state.rows.length;
-  let h = 40 + 56 + 36 + (n ? Math.min(n, MAX_ROWS) * 48 : 96) + 16;
-  if (!$("access").hidden) h += $("access").offsetHeight + 12;
+  let h = 32 + 52 + 36 + (n ? Math.min(n, MAX_ROWS) * 48 : 96) + 16;
+  if (!$("access").hidden) h += $("access").offsetHeight + 16;
   for (const d of document.querySelectorAll(".scrim:not([hidden]) .dialog")) h = Math.max(h, d.scrollHeight + 32);
   return Math.ceil(h);
 }
