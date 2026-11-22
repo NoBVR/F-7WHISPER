@@ -12,12 +12,12 @@ namespace F7Whisper;
 
 internal sealed class MainForm : Form
 {
+    private enum HotkeyAction { Start, Stop, Rows }
+    private readonly record struct Registration(int Id, HotkeyAction Action);
+
     private const string AppHost = "app.f7whisper.local";
     private const string PageUrl = "https://app.f7whisper.local/index.html";
-    private const int StartId = 6;
-    private const int StopId = 7;
-    private const int FirstTriggerId = 0x100;
-    private const int LastTriggerId = 0xBFFF;
+    private const int LastHotkeyId = 0xBFFF;
     private const int WidthCss = 800;
     private static readonly Color Background = Color.FromArgb(10, 10, 10);
     private static readonly string AppVersion =
@@ -30,15 +30,13 @@ internal sealed class MainForm : Form
     private readonly KeyEngine _engine;
     private readonly Screen _initialScreen;
     private readonly Point? _initialPosition;
+    private readonly Dictionary<Chord, Registration> _registered = new();
 
-    // Registered row triggers by hotkey id; one id per distinct chord.
-    private readonly Dictionary<int, Chord> _triggerIds = new();
-    // Last registration result per chord, kept through a pause so the page shows no false error.
     private Dictionary<Chord, bool> _triggerOk = new();
-
+    private MouseHotkeys? _mouse;
+    private nint _hotkeyWindow;
+    private int _lastId;
     private HotkeyPair _hotkeys;
-    private bool _startOk;
-    private bool _stopOk;
     private bool _paused;
     private bool _pinned;
     private bool _pickButtonDown;
@@ -92,7 +90,14 @@ internal sealed class MainForm : Form
 
         _countTimer.Tick += (_, _) =>
         {
-            if (!_ready || _closing)
+            if (_closing)
+                return;
+
+            // Posted edges normally run first. Recover any edge whose wake-up
+            // message could not be posted, including a hold's physical release.
+            while (DispatchMouseEdge()) { }
+
+            if (!_ready)
                 return;
 
             if (_engine.TakeStateNotification())
@@ -140,6 +145,7 @@ internal sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        _hotkeyWindow = Handle;
         Native.ApplyFrame(Handle);
         _engine.SetOwner(Handle);
         RegisterHotkeys();
@@ -149,6 +155,7 @@ internal sealed class MainForm : Form
     protected override void OnHandleDestroyed(EventArgs e)
     {
         UnregisterHotkeys();
+        _hotkeyWindow = 0;
         if (!_closing)
             _engine.SetOwner(0);
         base.OnHandleDestroyed(e);
@@ -156,89 +163,132 @@ internal sealed class MainForm : Form
 
     protected override void OnLoad(EventArgs e)
     {
-        // The hidden HWND now has the destination monitor's actual DPI.
         PlaceWindow(_initialScreen.WorkingArea, _initialPosition, DeviceDpi);
         _trackWindow = true;
         base.OnLoad(e);
     }
 
-    private void UnregisterHotkeys()
-    {
-        if (_startOk) Native.UnregisterHotKey(Handle, StartId);
-        if (_stopOk) Native.UnregisterHotKey(Handle, StopId);
-        foreach (int id in _triggerIds.Keys)
-            Native.UnregisterHotKey(Handle, id);
-        _startOk = false;
-        _stopOk = false;
-        _triggerIds.Clear();
-    }
+    private void UnregisterHotkeys() => ApplyBindings(new(), refreshKeyboard: false);
 
-    private void RegisterHotkeys()
+    private void RegisterHotkeys(bool refreshKeyboard = true)
     {
-        UnregisterHotkeys();
-        if (!_paused && !_closing && IsHandleCreated)
+        var wanted = new Dictionary<Chord, HotkeyAction>();
+        var triggers = _engine.TriggerChords();
+        if (!_paused && !_closing && _hotkeyWindow != 0)
         {
-            _startOk = Register(StartId, _hotkeys.Start?.Chord);
-            _stopOk = Register(StopId, _hotkeys.Stop?.Chord);
+            if (_hotkeys.Stop is { } stop)
+                wanted.Add(stop.Chord, HotkeyAction.Stop);
+            if (_hotkeys.Start is { } start)
+                wanted.TryAdd(start.Chord, HotkeyAction.Start);
+
+            foreach (var chord in triggers)
+                wanted.TryAdd(chord, HotkeyAction.Rows);
         }
-        RegisterTriggers();
+
+        ApplyBindings(wanted, refreshKeyboard);
+
+        // Preserve the last known trigger result while the page captures a key.
+        var results = new Dictionary<Chord, bool>();
+        foreach (var chord in triggers)
+        {
+            results[chord] = !_hotkeys.Uses(chord) && (_paused
+                ? _triggerOk.GetValueOrDefault(chord)
+                : _registered.ContainsKey(chord));
+        }
+        _triggerOk = results;
     }
 
-    // Brings the row-trigger registrations in line with the rows; unchanged chords stay registered.
-    private void RegisterTriggers()
+    private void ApplyBindings(Dictionary<Chord, HotkeyAction> wanted, bool refreshKeyboard)
     {
-        bool active = !_paused && !_closing && IsHandleCreated;
-        var wanted = _engine.TriggerChords();
-        var ok = new Dictionary<Chord, bool>();
-        var registered = new HashSet<Chord>();
-
-        foreach (var (id, chord) in _triggerIds.ToArray())
+        foreach (var (chord, registration) in _registered.ToArray())
         {
-            if (active && !_hotkeys.Uses(chord) && Array.IndexOf(wanted, chord) >= 0)
-            {
-                registered.Add(chord);
+            if (wanted.TryGetValue(chord, out var action) && action == registration.Action &&
+                (chord.IsMouse || !refreshKeyboard))
                 continue;
-            }
-            Native.UnregisterHotKey(Handle, id);
-            _triggerIds.Remove(id);
+
+            _registered.Remove(chord);
+            if (!chord.IsMouse)
+                Native.UnregisterHotKey(_hotkeyWindow, registration.Id);
+            else if (registration.Action == HotkeyAction.Rows)
+                _engine.ReleaseMouseHold(chord);
         }
 
-        int nextId = FirstTriggerId;
-        foreach (var chord in wanted)
+        var usedIds = _registered.Values.Select(registration => registration.Id).ToHashSet();
+        foreach (var (chord, action) in wanted)
         {
-            bool registrationOk;
-            if (_hotkeys.Uses(chord))
+            if (_registered.ContainsKey(chord))
+                continue;
+
+            // There are fewer possible VK/modifier pairs than application hotkey IDs.
+            // Rotate IDs so queued input for a retired binding cannot start its replacement.
+            do
             {
-                // Start all / Stop all keeps the key.
-                registrationOk = false;
-            }
-            else if (!active)
-            {
-                registrationOk = _triggerOk.GetValueOrDefault(chord, true);
-            }
-            else if (registered.Contains(chord))
-            {
-                registrationOk = true;
-            }
-            else
-            {
-                while (_triggerIds.ContainsKey(nextId))
-                    nextId++;
-                registrationOk = nextId <= LastTriggerId && Register(nextId, chord);
-                if (registrationOk)
-                    _triggerIds.Add(nextId, chord);
-            }
-            ok[chord] = registrationOk;
+                _lastId = _lastId == LastHotkeyId ? 1 : _lastId + 1;
+            } while (usedIds.Contains(_lastId));
+
+            if (!chord.IsMouse && !Native.RegisterHotKey(_hotkeyWindow, _lastId,
+                    Native.ModNoRepeat | chord.Modifiers, (uint)chord.Vk))
+                continue;
+
+            usedIds.Add(_lastId);
+            _registered.Add(chord, new Registration(_lastId, action));
         }
 
-        _triggerOk = ok;
+        var mouseBindings = _registered.Where(pair => pair.Key.IsMouse)
+                                       .ToDictionary(pair => pair.Key, pair => pair.Value.Id);
+
+        if (mouseBindings.Count == 0)
+        {
+            var oldMouse = _mouse;
+            _mouse = null;
+            oldMouse?.Dispose();
+        }
+        else if (_mouse is not null)
+        {
+            _mouse.SetBindings(mouseBindings);
+        }
+        else
+        {
+            _mouse = MouseHotkeys.Start(_hotkeyWindow, mouseBindings);
+            if (_mouse is null)
+            {
+                foreach (var chord in mouseBindings.Keys)
+                    _registered.Remove(chord);
+            }
+        }
     }
 
-    private bool Register(int id, Chord? chord) =>
-        chord is { } key &&
-        Native.RegisterHotKey(Handle, id, Native.ModNoRepeat | key.Modifiers, (uint)key.Vk);
+    private bool HotkeyOk(Hotkey? hotkey, HotkeyAction action) =>
+        hotkey is not null && _registered.TryGetValue(hotkey.Chord, out var registration) &&
+        registration.Action == action;
 
-    private bool TriggerOk(Chord chord) => _triggerOk.GetValueOrDefault(chord);
+    private void DispatchHotkey(Chord chord, int id, bool down)
+    {
+        if (_closing || _paused || !_registered.TryGetValue(chord, out var registration) ||
+            registration.Id != id)
+            return;
+
+        if (registration.Action == HotkeyAction.Rows)
+        {
+            bool changed = down ? _engine.Activate(chord) : _engine.ReleaseMouseHold(chord);
+            if (changed)
+                SendState();
+        }
+        else if (down)
+        {
+            _engine.SetAll(registration.Action == HotkeyAction.Start);
+            SendState();
+        }
+    }
+
+    private bool DispatchMouseEdge()
+    {
+        if (_mouse is null || !_mouse.TryRead(out var edge))
+            return false;
+
+        DispatchHotkey(edge.Chord, edge.RegistrationId, edge.Down);
+        return true;
+    }
 
     protected override async void OnShown(EventArgs e)
     {
@@ -284,11 +334,6 @@ internal sealed class MainForm : Form
 
                 _ready = false;
                 CancelPick();
-                if (_paused)
-                {
-                    _paused = false;
-                    RegisterHotkeys();
-                }
             };
 
             core.NewWindowRequested += (_, args) => args.Handled = true;
@@ -382,7 +427,7 @@ internal sealed class MainForm : Form
                     if (RowSpec.Read(message.Field("input"), "", fromFile: false) is not { } added)
                         return;
                     _engine.Add(added);
-                    RegisterTriggers();
+                    RegisterHotkeys(refreshKeyboard: false);
                     if (_fitHeight is null) FitWindow();
                     break;
 
@@ -390,12 +435,12 @@ internal sealed class MainForm : Form
                     if (RowSpec.Read(message.Field("input"), id, fromFile: false) is not { } edited)
                         return;
                     _engine.Edit(edited);
-                    RegisterTriggers();
+                    RegisterHotkeys(refreshKeyboard: false);
                     break;
 
                 case "remove" when id is not null:
                     _engine.Remove(id);
-                    RegisterTriggers();
+                    RegisterHotkeys(refreshKeyboard: false);
                     if (_fitHeight is null) FitWindow();
                     break;
 
@@ -488,7 +533,6 @@ internal sealed class MainForm : Form
                 Close();
                 break;
             case "drag":
-                // Leave the WebView2 callback before entering the native move loop.
                 Native.BeginDrag(Handle);
                 break;
         }
@@ -517,24 +561,16 @@ internal sealed class MainForm : Form
                 m.Result = 0;
                 return;
 
-            case Native.WmHotkey when m.WParam == StartId || m.WParam == StopId:
-                bool start = m.WParam == StartId;
-                var key = start ? _hotkeys.Start : _hotkeys.Stop;
-                uint chord = unchecked((uint)(long)m.LParam);
-                if (!_closing && !_paused && (start ? _startOk : _stopOk) && key is not null &&
-                    (chord >> 16) == (uint)key.Vk && (chord & 0x0f) == key.Modifiers)
-                {
-                    _engine.SetAll(start);
-                    SendState();
-                }
+            case Native.WmHotkey:
+                uint packed = unchecked((uint)(long)m.LParam);
+                var chord = new Chord((int)(packed >> 16), packed & 0x0f);
+                if (!chord.IsMouse)
+                    DispatchHotkey(chord, (int)m.WParam, down: true);
                 m.Result = 0;
                 return;
 
-            case Native.WmHotkey when _triggerIds.TryGetValue((int)m.WParam, out var trigger):
-                uint pressed = unchecked((uint)(long)m.LParam);
-                if (!_closing && !_paused && (pressed >> 16) == (uint)trigger.Vk &&
-                    (pressed & 0x0f) == trigger.Modifiers && _engine.Activate(trigger))
-                    SendState();
+            case Native.WmMouseEdge:
+                DispatchMouseEdge();
                 m.Result = 0;
                 return;
 
@@ -589,9 +625,13 @@ internal sealed class MainForm : Form
             platform = "windows",
             accessOk = true,
             pinned = _pinned,
-            rows = _engine.Snapshot(TriggerOk),
+            rows = _engine.Snapshot(chord => _triggerOk.GetValueOrDefault(chord)),
             hotkeys = _hotkeys,
-            hotkeyOk = new { start = _startOk, stop = _stopOk },
+            hotkeyOk = new
+            {
+                start = HotkeyOk(_hotkeys.Start, HotkeyAction.Start),
+                stop = HotkeyOk(_hotkeys.Stop, HotkeyAction.Stop)
+            },
             switchStop = _engine.SwitchStop
         });
     }
@@ -635,6 +675,7 @@ internal sealed class MainForm : Form
         {
             _disposed = true;
             _closing = true;
+            UnregisterHotkeys();
             _pickTimer.Dispose();
             _countTimer.Dispose();
             _saveTimer.Dispose();

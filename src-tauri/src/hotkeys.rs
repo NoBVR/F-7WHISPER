@@ -1,12 +1,10 @@
 use crate::{
+    mouse,
     settings::{Hotkey, Hotkeys},
     Inbox, Message,
 };
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-/// Most distinct activation keys registered at once.
-const MAX_TRIGGERS: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -18,28 +16,16 @@ enum Role {
 #[derive(Clone, Copy)]
 enum Registration {
     Plugin(Shortcut),
+    Mouse(usize),
     #[cfg(windows)]
     Native { id: usize, signature: u32 },
 }
 
-impl Registration {
-    fn plugin(&self) -> bool {
-        match self {
-            Self::Plugin(_) => true,
-            #[cfg(windows)]
-            Self::Native { .. } => false,
-        }
-    }
-}
-
 struct Entry {
     key: Hotkey,
-    /// None after a failed unregistration: the key may still be held by us, but does nothing.
     role: Option<Role>,
-    /// Unique per registration, so events from an older registration are ignored.
     token: u64,
     registration: Registration,
-    /// A trigger press was seen and its release has not been.
     down: bool,
 }
 
@@ -54,18 +40,22 @@ pub struct Bindings {
     plugin: bool,
     tokens: u64,
     entries: Vec<Entry>,
+    mouse: Option<mouse::Listener>,
+    inbox: Inbox,
     #[cfg(windows)]
     hook: Option<native::Hook>,
-    #[cfg(windows)]
-    inbox: Inbox,
 }
 
 fn plugin_shortcut(h: &Hotkey) -> Option<Shortcut> {
+    // Windows registers raw virtual keys through the native path. On macOS
+    // these codes have no physical key mapping.
+    if h.key.code.starts_with("Vk") {
+        return None;
+    }
+
     #[cfg(target_os = "macos")]
     let code: Code = h.key.code.parse().ok()?;
 
-    // The plugin maps DOM codes through a fixed VK table. Select by the
-    // captured VK on Windows so alternate keyboard layouts keep their binding.
     #[cfg(windows)]
     let code: Code = match h.key.vk {
         0x30..=0x39 => format!("Digit{}", char::from(h.key.vk as u8)),
@@ -83,6 +73,15 @@ fn plugin_shortcut(h: &Hotkey) -> Option<Shortcut> {
     Some(Shortcut::new(Some(mods), code))
 }
 
+fn install_plugin(app: &AppHandle, shortcut: Shortcut, token: u64) -> bool {
+    app.global_shortcut().on_shortcut(shortcut, move |app, _, event| {
+        app.state::<Inbox>().post(Message::ShortcutEdge {
+            token,
+            pressed: event.state == ShortcutState::Pressed,
+        });
+    }).is_ok()
+}
+
 impl Bindings {
     pub fn new(window: &WebviewWindow) -> Self {
         let app = window.app_handle();
@@ -90,45 +89,70 @@ impl Bindings {
             plugin: app.plugin(tauri_plugin_global_shortcut::Builder::new().build()).is_ok(),
             tokens: 0,
             entries: Vec::new(),
+            mouse: None,
+            inbox: app.state::<Inbox>().inner().clone(),
             #[cfg(windows)]
             hook: native::Hook::install(window),
-            #[cfg(windows)]
-            inbox: app.state::<Inbox>().inner().clone(),
         }
     }
 
-    /// Registers Start all, Stop all and each distinct trigger (none while paused).
-    /// Unchanged registrations are kept, so a held trigger still sees its release.
-    /// Returns the triggers that were held down when they stopped being registered.
+    fn next_token(&mut self) -> u64 {
+        self.tokens = self.tokens.wrapping_add(1).max(1);
+        self.tokens
+    }
+
     pub fn apply(
-        &mut self, app: &AppHandle, keys: &Hotkeys, triggers: &[Hotkey], paused: bool,
+        &mut self,
+        app: &AppHandle,
+        keys: &Hotkeys,
+        triggers: &[Hotkey],
+        paused: bool,
+        access_ok: bool,
+        refresh_plugin: bool,
     ) -> Vec<Hotkey> {
         let mut wanted: Vec<(Role, &Hotkey)> = Vec::new();
         if !paused {
             wanted.extend(keys.start.iter().map(|key| (Role::Start, key)));
             wanted.extend(keys.stop.iter().map(|key| (Role::Stop, key)));
-            let mut count = 0;
             for key in triggers {
-                // A trigger equal to Start all or Stop all is not registered.
-                if count < MAX_TRIGGERS && !wanted.iter().any(|(_, k)| k.same_binding(key)) {
+                if !wanted.iter().any(|(_, existing)| existing.same_binding(key)) {
                     wanted.push((Role::Trigger, key));
-                    count += 1;
                 }
             }
         }
+        if !access_ok {
+            wanted.retain(|(_, key)| mouse::slot(key).is_none());
+        }
 
-        // Remove first, so a key can move between roles.
         let mut released = Vec::new();
-        let mut kept = Vec::with_capacity(self.entries.len());
+        let mut kept = Vec::new();
         for mut entry in std::mem::take(&mut self.entries) {
             let same = wanted.iter().find(|(role, key)| {
                 entry.role == Some(*role) && key.same_binding(&entry.key)
             });
             if let Some((_, key)) = same {
                 entry.key = (*key).clone();
-                kept.push(entry);
+                let keep = match entry.registration {
+                    // A lost worker took all its native mouse registrations with it.
+                    Registration::Mouse(_) => self.mouse.is_some(),
+                    Registration::Plugin(shortcut) if refresh_plugin => {
+                        // Preserve the token and down state across a successful
+                        // refresh so a physically held trigger keeps its release.
+                        app.global_shortcut().unregister(shortcut).is_err()
+                            || install_plugin(app, shortcut, entry.token)
+                    }
+                    _ => true,
+                };
+                if keep {
+                    kept.push(entry);
+                    continue;
+                }
+                if entry.down && entry.role == Some(Role::Trigger) {
+                    released.push(entry.key);
+                }
                 continue;
             }
+
             if entry.down && entry.role == Some(Role::Trigger) {
                 released.push(entry.key.clone());
             }
@@ -140,13 +164,19 @@ impl Bindings {
         }
         self.entries = kept;
 
+        if wanted.iter().any(|(_, key)| mouse::slot(key).is_some()) {
+            if self.mouse.is_none() {
+                let generation = self.next_token();
+                self.mouse = mouse::Listener::start(self.inbox.clone(), generation);
+            }
+        } else {
+            self.mouse.take();
+        }
+
         for (role, key) in wanted {
             if let Some(entry) = self.entries.iter_mut().find(|e| e.key.same_binding(key)) {
-                // Kept with this role, or a registration that would not go away: reuse it.
                 entry.role.get_or_insert(role);
-                continue;
-            }
-            if let Some(entry) = self.register(app, role, key) {
+            } else if let Some(entry) = self.register(app, role, key) {
                 self.entries.push(entry);
             }
         }
@@ -154,19 +184,17 @@ impl Bindings {
     }
 
     fn register(&mut self, app: &AppHandle, role: Role, key: &Hotkey) -> Option<Entry> {
-        self.tokens = self.tokens.wrapping_add(1);
-        let token = self.tokens;
-        let registration = match plugin_shortcut(key).filter(|_| self.plugin) {
-            Some(shortcut) => {
-                app.global_shortcut().on_shortcut(shortcut, move |app, _, event| {
-                    app.state::<Inbox>().post(Message::PluginHotkey {
-                        token,
-                        pressed: event.state == ShortcutState::Pressed,
-                    });
-                }).ok()?;
-                Registration::Plugin(shortcut)
+        let token = self.next_token();
+        let registration = if let Some(slot) = mouse::slot(key) {
+            self.mouse.as_ref()?.set(slot, token);
+            Registration::Mouse(slot)
+        } else if let Some(shortcut) = plugin_shortcut(key).filter(|_| self.plugin) {
+            if !install_plugin(app, shortcut, token) {
+                return None;
             }
-            None => self.register_native(key)?,
+            Registration::Plugin(shortcut)
+        } else {
+            self.register_native(key)?
         };
         Some(Entry { key: key.clone(), role: Some(role), token, registration, down: false })
     }
@@ -174,7 +202,6 @@ impl Bindings {
     #[cfg(windows)]
     fn register_native(&self, key: &Hotkey) -> Option<Registration> {
         let hook = self.hook.as_ref()?;
-        // Walk the id range so a just-released id is not reused at once.
         let used = |id: usize| self.entries.iter().any(|e| {
             matches!(e.registration, Registration::Native { id: taken, .. } if taken == id)
         });
@@ -193,6 +220,12 @@ impl Bindings {
 
     fn unregister(&self, app: &AppHandle, entry: &Entry) -> bool {
         match entry.registration {
+            Registration::Mouse(slot) => {
+                if let Some(mouse) = &self.mouse {
+                    mouse.set(slot, 0);
+                }
+                true
+            }
             Registration::Plugin(shortcut) => app.global_shortcut().unregister(shortcut).is_ok(),
             #[cfg(windows)]
             Registration::Native { id, .. } => {
@@ -201,11 +234,18 @@ impl Bindings {
         }
     }
 
+    pub fn mouse_offline(&mut self, generation: u64) -> bool {
+        if self.mouse.as_ref().is_some_and(|mouse| mouse.generation == generation) {
+            self.mouse.take();
+            return true;
+        }
+        false
+    }
+
     fn registered(&self, role: Role) -> bool {
         self.entries.iter().any(|e| e.role == Some(role))
     }
 
-    /// Whether Start all and Stop all are registered.
     pub fn ok(&self) -> (bool, bool) {
         (self.registered(Role::Start), self.registered(Role::Stop))
     }
@@ -214,15 +254,15 @@ impl Bindings {
         self.entries.iter().any(|e| e.role == Some(Role::Trigger) && e.key.same_binding(key))
     }
 
-    pub fn plugin_event(&mut self, token: u64, pressed: bool) -> Option<Hit> {
-        let index = self.entries.iter()
-            .position(|e| e.token == token && e.registration.plugin())?;
+    pub fn edge(&mut self, token: u64, pressed: bool) -> Option<Hit> {
+        let index = self.entries.iter().position(|e| e.token == token)?;
         if pressed {
             self.press(index)
-        } else if cfg!(windows) {
-            // Windows watches the release itself (see `native::watch_release`).
-            None
         } else {
+            #[cfg(windows)]
+            if matches!(self.entries[index].registration, Registration::Plugin(_)) {
+                return None;
+            }
             self.release(index)
         }
     }
@@ -244,24 +284,31 @@ impl Bindings {
 
     fn press(&mut self, index: usize) -> Option<Hit> {
         let entry = &mut self.entries[index];
-        match entry.role? {
-            Role::Start => Some(Hit::StartAll),
-            Role::Stop => Some(Hit::StopAll),
-            // Auto-repeat, or a press whose release has not been seen yet.
-            Role::Trigger if entry.down => None,
-            Role::Trigger => {
-                entry.down = true;
-                #[cfg(windows)]
-                native::watch_release(self.inbox.clone(), entry.key.key.vk, entry.token);
-                Some(Hit::Down(entry.key.clone()))
-            }
+        let role = entry.role?;
+        if entry.down {
+            return None;
         }
+
+        let mouse = matches!(entry.registration, Registration::Mouse(_));
+        // Windows keyboard Start/Stop already use MOD_NOREPEAT. Mouse and
+        // macOS registrations deliver both edges for every role.
+        entry.down = mouse || !cfg!(windows) || role == Role::Trigger;
+        #[cfg(windows)]
+        if !mouse && role == Role::Trigger {
+            native::watch_release(self.inbox.clone(), entry.key.key.vk, entry.token);
+        }
+
+        Some(match role {
+            Role::Start => Hit::StartAll,
+            Role::Stop => Hit::StopAll,
+            Role::Trigger => Hit::Down(entry.key.clone()),
+        })
     }
 
     fn release(&mut self, index: usize) -> Option<Hit> {
         let entry = &mut self.entries[index];
-        (entry.role == Some(Role::Trigger) && std::mem::take(&mut entry.down))
-            .then(|| Hit::Up(entry.key.clone()))
+        let was_down = std::mem::take(&mut entry.down);
+        (was_down && entry.role == Some(Role::Trigger)).then(|| Hit::Up(entry.key.clone()))
     }
 }
 
@@ -285,7 +332,6 @@ mod native {
     };
 
     const SUBCLASS: usize = 0xf701;
-    /// Hotkey ids FIRST..FIRST + SLOTS belong to us (application ids end at 0xBFFF).
     pub const FIRST: usize = 0x3700;
     pub const SLOTS: usize = 0x400;
     const RELEASE_POLL: Duration = Duration::from_millis(10);
@@ -347,9 +393,6 @@ mod native {
         }
     }
 
-    /// RegisterHotKey swallows the press but not the async key state, which also reads
-    /// as up when the user leaves the input desktop, so a hold cannot get stuck.
-    /// Only the main key counts: releasing it ends the hold even if modifiers stay down.
     pub fn watch_release(inbox: Inbox, vk: u16, token: u64) {
         let watcher = inbox.clone();
         let spawned = thread::Builder::new().name("trigger-release".into()).spawn(move || loop {
@@ -360,7 +403,6 @@ mod native {
             }
         });
         if spawned.is_err() {
-            // Never leave a hold running without a way to end it.
             inbox.post(Message::Released { token });
         }
     }

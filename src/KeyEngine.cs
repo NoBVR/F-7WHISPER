@@ -46,8 +46,8 @@ internal sealed class KeyEngine : IDisposable
     private readonly List<Row> _rows;
     // A removed or reconfigured row can still owe its original release.
     private readonly List<Row> _held = new();
-    // Trigger keys whose hold-mode rows run until the main key is released.
-    private readonly List<Chord> _holds = new();
+    private readonly List<Chord> _keyboardHolds = new();
+    private readonly HashSet<Chord> _mouseHolds = new();
     private readonly Thread _thread;
     private nint _owner;
     private bool _switchStop;
@@ -179,7 +179,7 @@ internal sealed class KeyEngine : IDisposable
         }
     }
 
-    // A trigger key went down (auto-repeat is already filtered out). Returns true if any row changed.
+    // A physical press reaches this method once per chord, including shared triggers.
     internal bool Activate(Chord chord)
     {
         lock (_gate)
@@ -219,11 +219,18 @@ internal sealed class KeyEngine : IDisposable
                 }
             }
 
-            if (hold && !_holds.Contains(chord))
+            if (hold)
             {
-                _holds.Add(chord);
-                if (_holdDue == long.MaxValue)
-                    _holdDue = Stopwatch.GetTimestamp() + HoldPeriod;
+                if (chord.IsMouse)
+                {
+                    _mouseHolds.Add(chord);
+                }
+                else if (!_keyboardHolds.Contains(chord))
+                {
+                    _keyboardHolds.Add(chord);
+                    if (_holdDue == long.MaxValue)
+                        _holdDue = Stopwatch.GetTimestamp() + HoldPeriod;
+                }
             }
 
             if (changed)
@@ -233,30 +240,50 @@ internal sealed class KeyEngine : IDisposable
         }
     }
 
-    // GetAsyncKeyState still sees a key whose press RegisterHotKey swallowed, and it
-    // reads as up when the user leaves the input desktop, so a hold cannot get stuck.
+    private bool StopHoldRows(Chord chord)
+    {
+        bool changed = false;
+        foreach (var row in _rows)
+        {
+            if (row.Running && row.Spec.Trigger is { Hold: true } trigger &&
+                trigger.Hotkey.Chord == chord)
+            {
+                SetRunning(row, false);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    // Also called when a binding disappears before its physical button-up.
+    internal bool ReleaseMouseHold(Chord chord)
+    {
+        lock (_gate)
+        {
+            if (!_mouseHolds.Remove(chord) || !StopHoldRows(chord))
+                return false;
+
+            UpdateWatch();
+            _wake.Set();
+            return true;
+        }
+    }
+
+    // RegisterHotKey delivers the keyboard press; poll only these main keys for release.
     private void PollHolds()
     {
         bool changed = false;
-        for (int i = _holds.Count - 1; i >= 0; i--)
+        for (int i = _keyboardHolds.Count - 1; i >= 0; i--)
         {
-            var chord = _holds[i];
+            var chord = _keyboardHolds[i];
             if (Native.KeyDown(chord.Vk))
                 continue;
 
-            _holds.RemoveAt(i);
-            foreach (var row in _rows)
-            {
-                if (row.Running && row.Spec.Trigger is { Hold: true } trigger &&
-                    trigger.Hotkey.Chord == chord)
-                {
-                    changed = true;
-                    SetRunning(row, false);
-                }
-            }
+            _keyboardHolds.RemoveAt(i);
+            changed |= StopHoldRows(chord);
         }
 
-        _holdDue = _holds.Count == 0 ? long.MaxValue : Stopwatch.GetTimestamp() + HoldPeriod;
+        _holdDue = _keyboardHolds.Count == 0 ? long.MaxValue : Stopwatch.GetTimestamp() + HoldPeriod;
         if (changed)
         {
             UpdateWatch();
@@ -327,7 +354,6 @@ internal sealed class KeyEngine : IDisposable
         return true;
     }
 
-    // Set when the scheduler itself stopped rows (switch-stop or a released hold key).
     internal bool TakeStateNotification()
     {
         lock (_gate)
@@ -418,7 +444,6 @@ internal sealed class KeyEngine : IDisposable
             ObserveForeground(Native.ForegroundPid(_owner));
         }
 
-        // Before pressing, so a released hold key gets no extra press.
         if (_holdDue <= now)
             PollHolds();
 

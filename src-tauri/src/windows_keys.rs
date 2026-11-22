@@ -3,7 +3,7 @@ use std::mem::size_of;
 use tauri::WebviewWindow;
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+        MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
         KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX,
         VIRTUAL_KEY,
     },
@@ -46,7 +46,8 @@ pub fn map(key: &Key) -> Option<Stroke> {
                 | "ControlRight" | "AltRight" | "MetaLeft" | "MetaRight" | "ContextMenu"
         );
     let scan = (mapped & 0xff) as u16;
-    (scan != 0).then_some(Stroke { vk, scan, extended })
+    let raw_vk = code.strip_prefix("Vk").and_then(|n| n.parse::<u16>().ok()) == Some(vk);
+    (scan != 0 || raw_vk).then_some(Stroke { vk, scan, extended })
 }
 
 pub struct Keyboard {
@@ -74,7 +75,10 @@ impl Keyboard {
                     return false;
                 }
             }
-            let mut flags = KEYEVENTF_SCANCODE;
+            let mut flags = KEYBD_EVENT_FLAGS::default();
+            if stroke.scan != 0 {
+                flags |= KEYEVENTF_SCANCODE;
+            }
             if stroke.extended {
                 flags |= KEYEVENTF_EXTENDEDKEY;
             }

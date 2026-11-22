@@ -2,6 +2,7 @@
 
 mod engine;
 mod hotkeys;
+mod mouse;
 mod settings;
 mod wait;
 mod window;
@@ -64,7 +65,9 @@ enum Message {
     #[serde(skip)]
     Publish,
     #[serde(skip)]
-    PluginHotkey { token: u64, pressed: bool },
+    ShortcutEdge { token: u64, pressed: bool },
+    #[serde(skip)]
+    MouseOffline { generation: u64 },
     #[cfg(windows)]
     #[serde(skip)]
     NativeHotkey { id: usize, signature: u32 },
@@ -82,8 +85,7 @@ struct Inbox {
 impl Inbox {
     fn post(&self, message: Message) {
         if self.messages.send(message).is_ok() {
-            // Main-thread callers cannot wake the loop with run_on_main_thread:
-            // it executes inline there. Only the helper posts the wake-up.
+            // run_on_main_thread executes inline for a main-thread caller.
             let _ = self.wake.send(());
         }
     }
@@ -178,9 +180,10 @@ impl Host {
             settings.rows, keys::Keyboard::new(&window), window.is_focused().unwrap_or(true),
             settings.switch_stop, move || inbox.post(Message::Publish),
         );
+        let access_ok = keys::trusted();
         let mut bindings = Bindings::new(&window);
         let triggers = engine.rows().trigger_keys();
-        bindings.apply(app, &settings.hotkeys, &triggers, false);
+        bindings.apply(app, &settings.hotkeys, &triggers, false, access_ok, false);
         let now = Instant::now();
         Self {
             window,
@@ -197,7 +200,7 @@ impl Host {
             paused: false,
             switch_stop: settings.switch_stop,
             picker: None,
-            access_ok: keys::trusted(),
+            access_ok,
             prompted: false,
             ready: false,
             shown: false,
@@ -295,7 +298,9 @@ impl Host {
     }
 
     fn allow_start(&mut self) -> bool {
-        self.refresh_access();
+        if self.refresh_access() {
+            self.rebind(false);
+        }
         if !self.access_ok && !self.prompted {
             self.prompted = true;
             keys::prompt();
@@ -309,13 +314,12 @@ impl Host {
         }
     }
 
-    /// Re-registers the global keys; true when that ended a hold (rows stopped).
-    fn rebind(&mut self) -> bool {
+    fn rebind(&mut self, refresh_plugin: bool) -> bool {
         let triggers = self.engine.rows().trigger_keys();
         let released = self.bindings.apply(
-            self.window.app_handle(), &self.hotkeys, &triggers, self.paused,
+            self.window.app_handle(), &self.hotkeys, &triggers,
+            self.paused, self.access_ok, refresh_plugin,
         );
-        // A trigger that is no longer registered cannot report its release.
         for key in &released {
             self.engine.change(|rows| rows.trigger_up(key));
         }
@@ -387,7 +391,7 @@ impl Host {
         self.cancel_pick();
         self.engine.shutdown();
         self.paused = true;
-        self.rebind();
+        self.rebind(false);
         if capture {
             self.capture();
         }
@@ -404,11 +408,11 @@ impl Host {
             Message::Ready => {
                 self.cancel_pick();
                 self.paused = false;
-                self.rebind();
+                self.refresh_access();
+                self.rebind(true);
                 self.ready = true;
                 self.reveal();
                 self.capture();
-                self.refresh_access();
             }
             Message::Activate => {
                 self.activate();
@@ -431,19 +435,25 @@ impl Host {
                 }
             }
             Message::Toggle { id } => {
-                let running = self.engine.rows().running(&id);
-                let Some(running) = running else { return };
+                let Some(running) = self.engine.rows().running(&id) else { return };
                 if running || self.allow_start() {
                     self.engine.change(|rows| rows.set_running(Some(&id), !running));
                 }
             }
             Message::StartAll => self.all(true),
             Message::StopAll => self.all(false),
-            Message::PluginHotkey { token, pressed } => {
-                let hit = self.bindings.plugin_event(token, pressed);
+            Message::ShortcutEdge { token, pressed } => {
+                let hit = self.bindings.edge(token, pressed);
                 if !self.hit(hit) {
                     return;
                 }
+            }
+            Message::MouseOffline { generation } => {
+                if !self.bindings.mouse_offline(generation) {
+                    return;
+                }
+                self.refresh_access();
+                self.rebind(false);
             }
             #[cfg(windows)]
             Message::NativeHotkey { id, signature } => {
@@ -462,34 +472,33 @@ impl Host {
             Message::Add { input } => {
                 let Some(input) = Input::from_page(&input) else { return };
                 self.engine.change(|rows| rows.add(input));
-                self.rebind();
+                self.rebind(false);
                 self.dirty();
             }
             Message::Edit { id, input } => {
                 let Some(input) = Input::from_page(&input) else { return };
                 self.engine.change(|rows| rows.edit(&id, input));
-                self.rebind();
+                self.rebind(false);
                 self.dirty();
             }
             Message::Remove { id } => {
                 self.engine.change(|rows| rows.remove(&id));
-                self.rebind();
+                self.rebind(false);
                 self.dirty();
             }
             Message::Settings { hotkeys, switch_stop } => {
                 self.hotkeys = hotkeys.normalized();
                 self.switch_stop = switch_stop;
                 self.engine.change(|rows| rows.set_switch_stop(switch_stop));
-                self.rebind();
+                self.refresh_access();
+                self.rebind(true);
                 self.capture();
                 self.save_at = (!self.save()).then(|| Instant::now() + SAVE);
             }
             Message::PauseHotkeys { on } => {
                 self.paused = on;
-                // While paused, report nothing unless a hold had to end.
-                if !self.rebind() && on {
-                    return;
-                }
+                self.refresh_access();
+                self.rebind(!on);
             }
             Message::ListApps => {
                 let mut names = BTreeMap::new();
@@ -545,6 +554,7 @@ impl Host {
         if self.access_at.is_some_and(|t| t <= now) {
             self.access_at = Some(now + ACCESS);
             if self.refresh_access() {
+                self.rebind(false);
                 self.state();
             }
         }

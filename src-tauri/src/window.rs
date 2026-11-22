@@ -29,8 +29,6 @@ fn contains(monitor: &Monitor, p: Position) -> bool {
 fn move_to(window: &WebviewWindow, p: PhysicalPosition<i32>, monitor: &Monitor) {
     #[cfg(target_os = "macos")]
     {
-        // Tao converts a physical position using the window's current scale.
-        // For a cross-display restore, convert using the destination scale.
         let _ = window.set_position(p.to_logical::<f64>(monitor.scale_factor()));
     }
     #[cfg(windows)]
@@ -99,20 +97,28 @@ fn fit_on(window: &WebviewWindow, monitor: &Monitor, p: Position, width: i64, he
     }
 }
 
-/// Windows 11 frame: 8 px rounded corners (the system maximum) and a 1 px #2e2e2e border.
 #[cfg(windows)]
 pub fn frame(window: &WebviewWindow) {
+    use std::mem::{size_of, size_of_val};
     use windows::Win32::{
         Foundation::HWND,
-        Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
+        Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE,
+            DWMWCP_ROUND,
+        },
     };
     let Ok(handle) = window.hwnd() else { return };
     let hwnd = HWND(handle.0.cast());
     let corner = DWMWCP_ROUND;
-    let border: u32 = 0x002E_2E2E; // COLORREF 0x00BBGGRR
+    let border: u32 = 0x002E_2E2E;
     unsafe {
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, std::ptr::from_ref(&corner).cast(), size_of_val(&corner) as u32);
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&border as *const u32).cast(), size_of::<u32>() as u32);
+        let _ = DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, std::ptr::from_ref(&corner).cast(),
+            size_of_val(&corner) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd, DWMWA_BORDER_COLOR, std::ptr::from_ref(&border).cast(), size_of::<u32>() as u32,
+        );
     }
 }
 

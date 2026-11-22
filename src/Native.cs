@@ -20,14 +20,15 @@ internal static class Native
     internal const int WmSysCommand = 0x0112;
     internal const int WmDpiChanged = 0x02E0;
     internal const int WmHotkey = 0x0312;
-    internal const int WmStateChanged = 0x8001; // WM_APP + 1
+    internal const int WmStateChanged = 0x8001;
+    internal const int WmMouseEdge = 0x8002;
     internal const uint ModNoRepeat = 0x4000;
 
     internal static void ApplyFrame(nint hwnd)
     {
-        SetDwmValue(hwnd, 20, 1);   // DWMWA_USE_IMMERSIVE_DARK_MODE
-        SetDwmValue(hwnd, 33, 2);   // DWMWCP_ROUND
-        SetDwmValue(hwnd, 34, 0x002E2E2E);  // DWMWA_BORDER_COLOR: 1 px #2e2e2e (COLORREF is 0x00BBGGRR)
+        SetDwmValue(hwnd, 20, 1);            // DWMWA_USE_IMMERSIVE_DARK_MODE
+        SetDwmValue(hwnd, 33, 2);            // DWMWCP_ROUND
+        SetDwmValue(hwnd, 34, 0x002E2E2E);   // DWMWA_BORDER_COLOR
 
         var margins = new Margins { Top = 1 };
         DwmExtendFrameIntoClientArea(hwnd, ref margins);
@@ -55,7 +56,6 @@ internal static class Native
 
     internal static bool KeyDown(int vk) => GetAsyncKeyState(vk) < 0;
 
-    // Safe from any thread; fails harmlessly once the window is gone.
     internal static void PostStateChanged(nint hwnd) => PostMessageW(hwnd, WmStateChanged, 0, 0);
 
     internal static void BeginDrag(nint hwnd)
@@ -145,20 +145,22 @@ internal static class Native
         return result;
     }
 
-    internal readonly record struct Stroke(ushort Vk, ushort Scan, bool Extended, uint MouseDown);
+    internal readonly record struct Stroke(ushort Vk, ushort Scan, bool Extended,
+                                           uint MouseDown, uint MouseData = 0);
 
     internal static Stroke MapStroke(RowSpec spec)
     {
         if (spec.Kind == "click")
         {
-            uint down = spec.Button switch
+            return spec.Button switch
             {
-                "left" => 0x0002u,
-                "right" => 0x0008u,
-                "middle" => 0x0020u,
-                _ => 0u
+                "left"    => new Stroke(0, 0, false, 0x0002),
+                "right"   => new Stroke(0, 0, false, 0x0008),
+                "middle"  => new Stroke(0, 0, false, 0x0020),
+                "back"    => new Stroke(0, 0, false, 0x0080, 1),
+                "forward" => new Stroke(0, 0, false, 0x0080, 2),
+                _ => default
             };
-            return new Stroke(0, 0, false, down);
         }
 
         string code = spec.Code!;
@@ -177,6 +179,9 @@ internal static class Native
         };
 
         uint scan = MapVirtualKeyW((uint)mappedVk, 4); // MAPVK_VK_TO_VSC_EX
+        if (scan == 0 && !code.StartsWith("Vk", StringComparison.Ordinal))
+            return default;
+
         bool extended = (scan >> 8) is 0xE0 or 0xE1 ||
             code is "ArrowUp" or "ArrowDown" or "ArrowLeft" or "ArrowRight"
                 or "Insert" or "Delete" or "Home" or "End" or "PageUp" or "PageDown"
@@ -188,10 +193,13 @@ internal static class Native
 
     private static readonly int InputSize = Marshal.SizeOf<Input>();
 
-    private static Input Mouse(uint flags, int dx = 0, int dy = 0) => new()
+    private static Input Mouse(uint flags, int dx = 0, int dy = 0, uint data = 0) => new()
     {
         Type = 0,
-        Data = new InputUnion { Mouse = new MouseInput { Dx = dx, Dy = dy, Flags = flags } }
+        Data = new InputUnion
+        {
+            Mouse = new MouseInput { Dx = dx, Dy = dy, MouseData = data, Flags = flags }
+        }
     };
 
     private static int Normalize(int coordinate, int origin, int extent)
@@ -199,7 +207,6 @@ internal static class Native
         long offset = Math.Clamp((long)coordinate - origin, 0, extent - 1L);
         if (offset == 0) return 0;
         if (offset == extent - 1L) return 65535;
-        // Aim at the middle of the pixel's bin in the 16-bit absolute coordinate space.
         return (int)(((2 * offset + 1) * 32768) / extent);
     }
 
@@ -208,7 +215,9 @@ internal static class Native
         Input input;
         if (stroke.MouseDown != 0)
         {
-            input = Mouse(up ? stroke.MouseDown << 1 : stroke.MouseDown);
+            // Each supported DOWN flag is followed by its UP bit, including
+            // XDOWN (0x0080) / XUP (0x0100). Both edges carry the same mouseData.
+            input = Mouse(up ? stroke.MouseDown << 1 : stroke.MouseDown, data: stroke.MouseData);
             if (!up && at is not null)
             {
                 int width = GetSystemMetrics(78);  // SM_CXVIRTUALSCREEN
@@ -225,20 +234,19 @@ internal static class Native
         }
         else
         {
-            if (stroke.Scan == 0)
+            if (stroke.Vk == 0)
                 return false;
 
+            // A validated Vk<n> can identify a VK with no mapped scan code.
+            uint flags = stroke.Scan != 0 ? 0x0008u : 0u;
+            if (stroke.Extended) flags |= 0x0001;
+            if (up) flags |= 0x0002;
             input = new Input
             {
                 Type = 1,
                 Data = new InputUnion
                 {
-                    Keyboard = new KeyboardInput
-                    {
-                        Vk = stroke.Vk,
-                        Scan = stroke.Scan,
-                        Flags = 0x0008u | (stroke.Extended ? 0x0001u : 0u) | (up ? 0x0002u : 0u)
-                    }
+                    Keyboard = new KeyboardInput { Vk = stroke.Vk, Scan = stroke.Scan, Flags = flags }
                 }
             };
         }
@@ -341,7 +349,10 @@ internal static class Native
     private static extern nint SendMessageW(nint hwnd, uint message, nint wParam, nint lParam);
 
     [DllImport("user32.dll", ExactSpelling = true)]
-    private static extern bool PostMessageW(nint hwnd, uint message, nint wParam, nint lParam);
+    internal static extern bool PostMessageW(nint hwnd, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint hwnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint vk);
@@ -360,9 +371,6 @@ internal static class Native
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc callback, nint argument);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(nint hwnd);
 
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern int GetWindowTextLengthW(nint hwnd);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Security;
 using System.Text.Json;
@@ -38,12 +39,22 @@ internal sealed record KeyChoice(string Label, string Code, int Vk)
             value.Field("vk").Integer() is not int vk || vk is <= 0 or >= 255)
             return null;
 
+        if ((code == "MouseBack" && vk != 5) || (code == "MouseForward" && vk != 6))
+            return null;
+
+        if (code.StartsWith("Vk", StringComparison.Ordinal) &&
+            code != "Vk" + vk.ToString(CultureInfo.InvariantCulture))
+            return null;
+
         return new KeyChoice(label, code, vk);
     }
 }
 
 // Windows identifies a shortcut by its VK and modifier mask.
-internal readonly record struct Chord(int Vk, uint Modifiers);
+internal readonly record struct Chord(int Vk, uint Modifiers)
+{
+    internal bool IsMouse => Vk is 5 or 6;
+}
 
 internal sealed record Hotkey(string Label, string Code, int Vk,
                               bool Ctrl, bool Alt, bool Shift, bool Meta)
@@ -106,7 +117,6 @@ internal sealed record Trigger(Hotkey Hotkey, string Mode)
 {
     internal bool Hold => Mode == "hold";
 
-    // A missing or null field means no trigger; false means the field is present but invalid.
     internal static bool TryRead(JsonElement value, out Trigger? trigger)
     {
         trigger = null;
@@ -167,7 +177,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
         }
 
         string? button = input.Field("button").Text();
-        if (kind != "click" || button is not ("left" or "right" or "middle"))
+        if (kind != "click" || button is not ("left" or "right" or "middle" or "back" or "forward"))
             return null;
 
         var at = input.Field("at");

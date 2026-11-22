@@ -24,7 +24,6 @@ use std::collections::BTreeSet;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    // CGEventSourceStateID is int32_t and CGMouseButton is uint32_t.
     fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
 }
 
@@ -53,7 +52,6 @@ fn windows_on_screen() -> Option<CFArray<WindowInfo>> {
         if array.is_null() {
             return None;
         }
-        // The Copy result owns an array of window description dictionaries.
         Some(CFArray::wrap_under_create_rule(array))
     }
 }
@@ -86,13 +84,12 @@ pub fn apps() -> Vec<String> {
     })
 }
 
+pub fn button_down(number: u32) -> bool {
+    unsafe { CGEventSourceButtonState(CGEventSourceStateID::HIDSystemState as i32, number) }
+}
+
 pub fn left_down() -> bool {
-    unsafe {
-        CGEventSourceButtonState(
-            CGEventSourceStateID::HIDSystemState as i32,
-            CGMouseButton::Left as u32,
-        )
-    }
+    button_down(CGMouseButton::Left as u32)
 }
 
 fn source() -> Option<CGEventSource> {
@@ -131,21 +128,27 @@ pub fn click(button: Button, at: Option<Point>, down: bool) -> bool {
             event.location()
         }
     };
-    let (native_button, press, release) = match button {
-        Button::Left => (CGMouseButton::Left, CGEventType::LeftMouseDown, CGEventType::LeftMouseUp),
-        Button::Right => (CGMouseButton::Right, CGEventType::RightMouseDown, CGEventType::RightMouseUp),
-        Button::Middle => (CGMouseButton::Center, CGEventType::OtherMouseDown, CGEventType::OtherMouseUp),
+
+    // The crate's CGMouseButton enum ends at Center. Quartz represents all
+    // three additional-button cases with OtherMouseDown/Up and a numeric field.
+    let (native_button, press, release, number) = match button {
+        Button::Left => (CGMouseButton::Left, CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, 0),
+        Button::Right => (CGMouseButton::Right, CGEventType::RightMouseDown, CGEventType::RightMouseUp, 1),
+        Button::Middle => (CGMouseButton::Center, CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 2),
+        Button::Back => (CGMouseButton::Center, CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 3),
+        Button::Forward => (CGMouseButton::Center, CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 4),
     };
     let kind = if down { press } else { release };
     let Ok(event) = CGEvent::new_mouse_event(source.clone(), kind, p, native_button) else {
         return false;
     };
+    event.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, number);
+    event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
     if fixed.is_some() {
         let Ok(movement) = CGEvent::new_mouse_event(source, CGEventType::MouseMoved, p, native_button)
         else { return false };
         movement.post(CGEventTapLocation::HID);
     }
-    event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
     event.post(CGEventTapLocation::HID);
     true
 }

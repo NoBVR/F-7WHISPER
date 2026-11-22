@@ -26,6 +26,8 @@ pub enum Button {
     Left,
     Right,
     Middle,
+    Back,
+    Forward,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -70,7 +72,6 @@ pub struct Trigger {
 }
 
 impl Trigger {
-    /// Missing or null means no trigger (`Some(None)`); anything else unreadable is `None`.
     fn read(value: Option<&Value>) -> Option<Option<Self>> {
         let value = match value {
             None | Some(Value::Null) => return Some(None),
@@ -127,7 +128,6 @@ impl Input {
             Some(name) => app_name(name.as_str()?),
         };
         let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(20, 86_400_000);
-        // A saved row keeps its keys or clicks when only its trigger is unreadable.
         let trigger = match Trigger::read(value.get("trigger")) {
             Some(trigger) => trigger,
             None if saved_row => None,
