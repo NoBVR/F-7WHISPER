@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use tauri::{AppHandle, Manager};
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, VK_CAPITAL};
 
 use crate::engine::worker::{get_click_count, RunControl};
@@ -67,6 +68,7 @@ static REGISTRY: Mutex<EngineRegistry> = Mutex::new(EngineRegistry {
     entered: 0,
 });
 
+#[cfg(windows)]
 #[link(name = "ntdll")]
 extern "system" {
     fn NtSetTimerResolution(
@@ -80,12 +82,17 @@ extern "system" {
 /// when it ends. Windows keeps that request per process, not per run, so when
 /// one of several runs ends it also drops the request for the others. This
 /// puts it back while any run is still live, and releases it after the last.
+#[cfg(windows)]
 fn rebalance_timer_resolution(live: u64) {
     let mut current = 0u32;
     unsafe {
         NtSetTimerResolution(10000, u8::from(live > 0), &mut current);
     }
 }
+
+// macOS: each worker manages its own Foundation activity.
+#[cfg(target_os = "macos")]
+fn rebalance_timer_resolution(_live: u64) {}
 
 // ---- one run ----
 
@@ -165,13 +172,24 @@ fn new_clicker_state(paused: bool) -> ClickerState {
 
 /// Same as Blur's private `worker::max_double_click_gap_ms`.
 fn max_double_click_gap_ms() -> u32 {
+    #[cfg(windows)]
     let system_timeout_ms = unsafe { GetDoubleClickTime() };
+    // macOS: convert AppKit seconds to Blur milliseconds.
+    #[cfg(target_os = "macos")]
+    let system_timeout_ms = objc2_app_kit::NSEvent::doubleClickInterval() * 1000.0;
     ((system_timeout_ms as f64) * 0.9).floor() as u32
 }
 
 /// Same test as Blur's `keyboard::caps_lock_enabled`, on the engine thread.
+#[cfg(windows)]
 fn caps_lock_on() -> bool {
     unsafe { (GetKeyState(VK_CAPITAL as i32) & 1) != 0 }
+}
+
+// macOS: AlphaShift is the Caps Lock state of the HID event source.
+#[cfg(target_os = "macos")]
+fn caps_lock_on() -> bool {
+    crate::engine::hid_flags().contains(core_graphics::event::CGEventFlags::CGEventFlagAlphaShift)
 }
 
 fn build_config(input: BlurInput, interval_ms: f64) -> ClickerConfig {

@@ -14,6 +14,8 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
+# Blur runs key and primary mouse-button rows on Windows and macOS.
+blur-engine = { path = "../blur-engine" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -27,8 +29,6 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-# Blur AutoClicker's engine; Windows only, never compiled for macOS.
-blur-engine = { path = "../blur-engine" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

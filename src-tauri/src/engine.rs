@@ -41,9 +41,9 @@ impl Output {
     }
 }
 
-/// Windows: keys and left / right / middle clicks run on Blur AutoClicker's engine.
+/// Windows and macOS: keys and left / right / middle clicks run on Blur AutoClicker's engine.
 /// Back / forward clicks (Blur has no side-button output) stay on this scheduler.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod blur {
     use crate::settings::{Action, Button, Input, Key, Point};
     use blur_engine::{BlurButton, BlurInput, BlurRun};
@@ -122,6 +122,21 @@ mod blur {
     }
 }
 
+/// macOS: Accessibility permission, asked at most every 500 ms (Blur rows poll every 1-10 ms).
+#[cfg(target_os = "macos")]
+fn trusted_cached(now: Instant) -> bool {
+    static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    match *last {
+        Some((at, ok)) if now.saturating_duration_since(at) < Duration::from_millis(500) => ok,
+        _ => {
+            let ok = keys::trusted();
+            *last = Some((now, ok));
+            ok
+        }
+    }
+}
+
 fn bound(spec: &RowSpec, key: &Hotkey, mode: Mode) -> bool {
     spec.input.trigger.as_ref().is_some_and(|t| t.mode == mode && t.hotkey.same_binding(key))
 }
@@ -138,10 +153,10 @@ struct Row {
     output: Option<Output>,
     #[serde(skip)]
     due: Instant,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[serde(skip)]
     plan: Option<blur::Plan>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[serde(skip)]
     blur: Option<blur::Active>,
 }
@@ -150,9 +165,9 @@ impl Row {
     fn new(spec: RowSpec) -> Self {
         let output = Output::map(&spec.input);
         Self {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             plan: blur::Plan::map(&spec.input, output.is_some()),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             blur: None,
             output,
             spec,
@@ -165,25 +180,25 @@ impl Row {
 
     fn configure(&mut self, input: Input) {
         self.output = Output::map(&input);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             self.plan = blur::Plan::map(&input, self.output.is_some());
         }
         self.spec.input = input;
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn on_blur(&self) -> bool {
         self.plan.is_some()
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn on_blur(&self) -> bool {
         false
     }
 
     /// Ends this row's Blur run (Blur releases what it holds) and keeps its final count.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn stop_blur(&mut self) {
         if let Some(active) = self.blur.take() {
             let base = active.base;
@@ -357,7 +372,7 @@ impl Rows {
         let row = &mut self.rows[index];
         // A running row keeps running: process() starts a new Blur run with the
         // new values once the row may press.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         row.stop_blur();
         row.configure(input);
         row.due = Instant::now();
@@ -365,7 +380,7 @@ impl Rows {
 
     pub fn remove(&mut self, id: &str) {
         self.release(Some(id));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(row) = self.rows.iter_mut().find(|r| r.spec.id == id) {
             row.stop_blur();
         }
@@ -395,7 +410,7 @@ impl Rows {
                 row.due = now;
             }
             row.running = running;
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if !running {
                 row.stop_blur();
             }
@@ -439,9 +454,9 @@ impl Rows {
             }
         }
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let (blur_next, blur_ended) = self.process_blur(focused, front.as_ref(), now);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let (blur_next, blur_ended) = (None::<Instant>, false);
 
         let mut next = self.switch_stop.then(|| now + WATCH);
@@ -476,7 +491,7 @@ impl Rows {
     /// Blur rows: start a run only once the row may press, pause it exactly when the
     /// old scheduler would skip a press, collect counts, and notice runs Blur ended itself.
     /// Returns the next poll time and whether any row stopped.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn process_blur(
         &mut self,
         focused: &AtomicBool,
@@ -484,6 +499,9 @@ impl Rows {
         now: Instant,
     ) -> (Option<Instant>, bool) {
         let own_focused = focused.load(Ordering::Acquire);
+        // macOS: a denied Quartz post has no error result. Gate new and live runs here.
+        #[cfg(target_os = "macos")]
+        let own_focused = own_focused || !trusted_cached(now);
         let mut poll: Option<Duration> = None;
         let mut ended = false;
         for row in self.rows.iter_mut().filter(|r| r.running) {

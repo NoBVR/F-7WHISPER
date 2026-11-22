@@ -14,6 +14,17 @@ crate-type = ["rlib", "cdylib"]
 # Versions are the ones pinned in Blur v3.10.2's src-tauri/Cargo.lock.
 [dependencies]
 tauri = { path = "tauri-shim", package = "f7-tauri-shim" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+thiserror = "=2.0.21"
+log = "=0.4.34"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rusqlite_migration = "=2.6.0"
+chrono = "=0.4.45"
+base64 = "=0.23.1"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
@@ -24,15 +35,14 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-targets = "=0.53.5"
-serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.154"
-thiserror = "=2.0.21"
-log = "=0.4.34"
-rusqlite = { version = "=0.40.2", features = ["bundled"] }
-rusqlite_migration = "=2.6.0"
-chrono = "=0.4.45"
-base64 = "=0.23.1"
-image = { version = "=0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25.0"
+core-foundation = "0.10.1"
+libc = "0.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSEnumerator"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSWorkspace"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -8,9 +8,15 @@
 //! - `tauri` is the `f7-tauri-shim` crate in tauri-shim/.
 //! - `f7.rs`: the F-7WHISPER API (`BlurRun` and the `f7_blur_*` C functions).
 #![allow(dead_code, unused)]
+#![cfg(any(windows, target_os = "macos"))]
 
 mod app_state;
 mod elevation;
+#[cfg(windows)]
+mod engine;
+// macOS: select the Quartz and AppKit backend.
+#[cfg(target_os = "macos")]
+#[path = "engine_mac/mod.rs"]
 mod engine;
 mod error;
 mod f7;

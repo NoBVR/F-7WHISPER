@@ -31,3 +31,11 @@ jobs:
           name: F-7WHISPER-mac
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+  engine:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path blur-engine/Cargo.toml
+      - run: cargo run --release --manifest-path blur-engine/Cargo.toml --example mac_rate
