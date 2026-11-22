@@ -1,0 +1,15 @@
+[package]
+name = "f7-tauri-shim"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "Stand-in for the few tauri items Blur's engine uses; F-7WHISPER does not link the real tauri crate."
+publish = false
+
+[lib]
+name = "f7_tauri_shim"
+path = "src/lib.rs"
+
+[dependencies]
+serde = "=1.0.229"
+serde_json = "=1.0.154"

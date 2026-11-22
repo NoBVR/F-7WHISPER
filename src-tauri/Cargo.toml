@@ -27,6 +27,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# Blur AutoClicker's engine; Windows only, never compiled for macOS.
+blur-engine = { path = "../blur-engine" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

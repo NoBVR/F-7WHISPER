@@ -127,7 +127,8 @@ impl Input {
             None | Some(Value::Null) => None,
             Some(name) => app_name(name.as_str()?),
         };
-        let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(20, 86_400_000);
+        // 1 ms = 1000 presses a second, Blur's ceiling.
+        let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(1, 86_400_000);
         let trigger = match Trigger::read(value.get("trigger")) {
             Some(trigger) => trigger,
             None if saved_row => None,

@@ -747,7 +747,7 @@ function intervalMs() {
   const v = Number($("intervalValue").value.trim().replace(",", "."));
   if (!Number.isFinite(v) || v <= 0) return null;
   const ms = Math.round(add.unit === "s" ? v * 1000 : v);
-  return ms >= 20 && ms <= 86400000 ? ms : null;
+  return ms >= 1 && ms <= 86400000 ? ms : null;   // 1 ms = 1000 a second, Blur's ceiling
 }
 function addReady() {
   if (!intervalMs()) return false;

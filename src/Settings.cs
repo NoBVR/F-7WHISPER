@@ -150,7 +150,8 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
         if (!Trigger.TryRead(input.Field("trigger"), out var trigger) && !fromFile)
             return null;
 
-        int interval = (int)Math.Clamp(milliseconds, 20L, 86_400_000L);
+        // 1 ms = 1000 presses a second, Blur's ceiling.
+        int interval = (int)Math.Clamp(milliseconds, 1L, 86_400_000L);
         var appField = input.Field("app");
         string? app = null;
         if (appField.ValueKind == JsonValueKind.String)

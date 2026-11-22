@@ -9,7 +9,10 @@
     <Nullable>enable</Nullable>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
-    <DefaultItemExcludes>$(DefaultItemExcludes);src-tauri\**;node_modules\**;.github\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);src-tauri\**;blur-engine\**;node_modules\**;.github\**</DefaultItemExcludes>
+    <!-- Blur AutoClicker's engine (Rust cdylib), loaded through DllImport("blur_engine"). -->
+    <BlurEngineDir>$(MSBuildProjectDirectory)\blur-engine</BlurEngineDir>
+    <BlurEngineDll Condition="'$(BlurEngineDll)' == ''">$(BlurEngineDir)\target\release\blur_engine.dll</BlurEngineDll>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,4 +23,24 @@
           CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" />
   </ItemGroup>
+
+  <!--
+    blur_engine.dll goes beside the exe on build and into the publish set. A single-file
+    publish with IncludeNativeLibrariesForSelfExtract=true bundles it inside the exe; at
+    start-up the host extracts bundled native libraries and adds that folder to the
+    native search path, so DllImport("blur_engine") finds it.
+    With SkipBlurEngineBuild=true the DLL is only included if it already exists.
+  -->
+  <ItemGroup Condition="'$(SkipBlurEngineBuild)' != 'true' Or Exists('$(BlurEngineDll)')">
+    <None Include="$(BlurEngineDll)"
+          Link="blur_engine.dll"
+          Visible="false"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="BuildBlurEngine" BeforeTargets="BeforeBuild"
+          Condition="'$(SkipBlurEngineBuild)' != 'true'">
+    <Exec Command="cargo build --release --manifest-path &quot;$(BlurEngineDir)\Cargo.toml&quot;" />
+  </Target>
 </Project>

@@ -41,6 +41,87 @@ impl Output {
     }
 }
 
+/// Windows: keys and left / right / middle clicks run on Blur AutoClicker's engine.
+/// Back / forward clicks (Blur has no side-button output) stay on this scheduler.
+#[cfg(windows)]
+mod blur {
+    use crate::settings::{Action, Button, Input, Key, Point};
+    use blur_engine::{BlurButton, BlurInput, BlurRun};
+    use std::time::Duration;
+
+    pub const POLL_MIN: Duration = Duration::from_millis(1);
+    pub const POLL_MAX: Duration = Duration::from_millis(10);
+
+    #[derive(Clone, Copy)]
+    pub enum Plan {
+        Key(u16),
+        Click(Button, Option<Point>),
+    }
+
+    // The VK windows_keys::map sends for this key: left/right modifiers, numpad keys, Vk<n>.
+    fn vk(key: &Key) -> u16 {
+        match key.code.as_str() {
+            "ShiftLeft" => 0xa0,
+            "ShiftRight" => 0xa1,
+            "ControlLeft" => 0xa2,
+            "ControlRight" => 0xa3,
+            "AltLeft" => 0xa4,
+            "AltRight" => 0xa5,
+            "MetaLeft" => 0x5b,
+            "MetaRight" => 0x5c,
+            "NumpadEnter" => 0x0d,
+            "NumpadDivide" => 0x6f,
+            "NumpadDecimal" => 0x6e,
+            code => match code.strip_prefix("Numpad").map(str::as_bytes) {
+                Some([digit @ b'0'..=b'9']) => 0x60 + u16::from(*digit - b'0'),
+                _ => key.vk,
+            },
+        }
+    }
+
+    impl Plan {
+        /// `mapped` is whether the old scheduler could send this row (keys::map succeeded);
+        /// a key it cannot send keeps today's behaviour on the old scheduler.
+        pub fn map(input: &Input, mapped: bool) -> Option<Self> {
+            match &input.action {
+                Action::Key(key) => mapped.then(|| Self::Key(vk(key))),
+                Action::Click { button: button @ (Button::Left | Button::Right | Button::Middle), at } => {
+                    Some(Self::Click(*button, *at))
+                }
+                Action::Click { .. } => None,
+            }
+        }
+
+        pub fn start(self, interval_ms: i64) -> std::io::Result<BlurRun> {
+            let input = match self {
+                Self::Key(vk) => BlurInput::Key { vk },
+                Self::Click(button, at) => BlurInput::Click {
+                    button: match button {
+                        Button::Right => BlurButton::Right,
+                        Button::Middle => BlurButton::Middle,
+                        _ => BlurButton::Left,
+                    },
+                    at: at.map(|p| (p.x, p.y)),
+                },
+            };
+            BlurRun::start(input, interval_ms.max(1) as f64)
+        }
+    }
+
+    pub struct Active {
+        pub run: BlurRun,
+        pub paused: bool,
+        /// The row's count when this run started; the run's clicks add to it.
+        pub base: u64,
+    }
+
+    impl Active {
+        pub fn count(&self, clicks: i64) -> u64 {
+            self.base.saturating_add(clicks.max(0) as u64)
+        }
+    }
+}
+
 fn bound(spec: &RowSpec, key: &Hotkey, mode: Mode) -> bool {
     spec.input.trigger.as_ref().is_some_and(|t| t.mode == mode && t.hotkey.same_binding(key))
 }
@@ -57,17 +138,57 @@ struct Row {
     output: Option<Output>,
     #[serde(skip)]
     due: Instant,
+    #[cfg(windows)]
+    #[serde(skip)]
+    plan: Option<blur::Plan>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    blur: Option<blur::Active>,
 }
 
 impl Row {
     fn new(spec: RowSpec) -> Self {
+        let output = Output::map(&spec.input);
         Self {
-            output: Output::map(&spec.input),
+            #[cfg(windows)]
+            plan: blur::Plan::map(&spec.input, output.is_some()),
+            #[cfg(windows)]
+            blur: None,
+            output,
             spec,
             running: false,
             count: 0,
             reported: 0,
             due: Instant::now(),
+        }
+    }
+
+    fn configure(&mut self, input: Input) {
+        self.output = Output::map(&input);
+        #[cfg(windows)]
+        {
+            self.plan = blur::Plan::map(&input, self.output.is_some());
+        }
+        self.spec.input = input;
+    }
+
+    #[cfg(windows)]
+    fn on_blur(&self) -> bool {
+        self.plan.is_some()
+    }
+
+    #[cfg(not(windows))]
+    fn on_blur(&self) -> bool {
+        false
+    }
+
+    /// Ends this row's Blur run (Blur releases what it holds) and keeps its final count.
+    #[cfg(windows)]
+    fn stop_blur(&mut self) {
+        if let Some(active) = self.blur.take() {
+            let base = active.base;
+            let clicks = active.run.stop();
+            self.count = self.count.max(base.saturating_add(clicks.max(0) as u64));
         }
     }
 }
@@ -234,13 +355,20 @@ impl Rows {
         let Some(index) = self.rows.iter().position(|r| r.spec.id == id) else { return };
         self.release(Some(id));
         let row = &mut self.rows[index];
-        row.output = Output::map(&input);
-        row.spec.input = input;
+        // A running row keeps running: process() starts a new Blur run with the
+        // new values once the row may press.
+        #[cfg(windows)]
+        row.stop_blur();
+        row.configure(input);
         row.due = Instant::now();
     }
 
     pub fn remove(&mut self, id: &str) {
         self.release(Some(id));
+        #[cfg(windows)]
+        if let Some(row) = self.rows.iter_mut().find(|r| r.spec.id == id) {
+            row.stop_blur();
+        }
         self.rows.retain(|r| r.spec.id != id);
         if !self.any_running() {
             self.target = None;
@@ -267,6 +395,10 @@ impl Rows {
                 row.due = now;
             }
             row.running = running;
+            #[cfg(windows)]
+            if !running {
+                row.stop_blur();
+            }
         }
         if !running {
             // Release what the stopped rows hold, plus anything left by a removed row.
@@ -307,8 +439,14 @@ impl Rows {
             }
         }
 
+        #[cfg(windows)]
+        let (blur_next, blur_ended) = self.process_blur(focused, front.as_ref(), now);
+        #[cfg(not(windows))]
+        let (blur_next, blur_ended) = (None::<Instant>, false);
+
         let mut next = self.switch_stop.then(|| now + WATCH);
-        for row in self.rows.iter_mut().filter(|r| r.running) {
+        next = next.into_iter().chain(blur_next).min();
+        for row in self.rows.iter_mut().filter(|r| r.running && !r.on_blur()) {
             let now = Instant::now();
             if row.due <= now {
                 let period = Duration::from_millis(row.spec.input.interval_ms as u64);
@@ -332,7 +470,60 @@ impl Rows {
             }
             next = Some(next.map_or(row.due, |t| t.min(row.due)));
         }
-        (self.held.values().map(|h| h.due).chain(next).min(), false)
+        (self.held.values().map(|h| h.due).chain(next).min(), blur_ended)
+    }
+
+    /// Blur rows: start a run only once the row may press, pause it exactly when the
+    /// old scheduler would skip a press, collect counts, and notice runs Blur ended itself.
+    /// Returns the next poll time and whether any row stopped.
+    #[cfg(windows)]
+    fn process_blur(
+        &mut self,
+        focused: &AtomicBool,
+        front: Option<&Foreground>,
+        now: Instant,
+    ) -> (Option<Instant>, bool) {
+        let own_focused = focused.load(Ordering::Acquire);
+        let mut poll: Option<Duration> = None;
+        let mut ended = false;
+        for row in self.rows.iter_mut().filter(|r| r.running) {
+            let Some(plan) = row.plan else { continue };
+            let blocked = own_focused
+                || !front.is_some_and(|app| app.allows(row.spec.input.app.as_deref()));
+
+            if row.blur.as_ref().is_some_and(|active| !active.run.is_running()) {
+                row.stop_blur();
+                row.running = false;
+                ended = true;
+                continue;
+            }
+
+            match &mut row.blur {
+                None if blocked => {}
+                None => match plan.start(row.spec.input.interval_ms) {
+                    Ok(run) => row.blur = Some(blur::Active { run, paused: false, base: row.count }),
+                    Err(_) => {
+                        row.running = false;
+                        ended = true;
+                        continue;
+                    }
+                },
+                Some(active) => {
+                    if active.paused != blocked {
+                        active.run.set_paused(blocked);
+                        active.paused = blocked;
+                    }
+                    row.count = row.count.max(active.count(active.run.clicks()));
+                }
+            }
+            let period = Duration::from_millis(row.spec.input.interval_ms.max(1) as u64);
+            poll = Some(poll.map_or(period, |p| p.min(period)));
+        }
+        if ended && !self.any_running() {
+            self.target = None;
+            self.last_front = None;
+        }
+        (poll.map(|p| now + p.clamp(blur::POLL_MIN, blur::POLL_MAX)), ended)
     }
 }
 

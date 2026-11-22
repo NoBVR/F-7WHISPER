@@ -21,6 +21,12 @@ internal sealed class KeyEngine : IDisposable
         internal long ReportedCount;
         internal bool Running;
         internal bool Down;
+        // Keys and left / right / middle clicks run on Blur's engine; back / forward
+        // clicks (no side-button output there) stay on this scheduler.
+        internal bool UsesBlur;
+        internal ulong Blur;
+        internal bool BlurPaused;
+        internal long BlurBase;
 
         internal Row(RowSpec spec)
         {
@@ -34,11 +40,18 @@ internal sealed class KeyEngine : IDisposable
             Stroke = Native.MapStroke(spec);
             Period = Milliseconds(spec.IntervalMs);
             Hold = Math.Min(Milliseconds(30), Period / 2);
+            // A key without a usable VK never presses, as before, on the old scheduler.
+            UsesBlur = spec.Kind == "click"
+                ? spec.Button is "left" or "right" or "middle"
+                : Stroke.Vk != 0;
         }
     }
 
     private static readonly long WatchPeriod = Milliseconds(75);
     private static readonly long HoldPeriod = Milliseconds(10);
+    private static readonly long BlurPollMin = Milliseconds(1);
+    private static readonly long BlurPollMax = Milliseconds(10);
+    private static readonly long ImageCachePeriod = Milliseconds(1000);
     private static readonly uint OwnPid = (uint)Environment.ProcessId;
 
     private readonly object _gate = new();
@@ -55,6 +68,9 @@ internal sealed class KeyEngine : IDisposable
     private uint _targetPid;
     private long _watchDue = long.MaxValue;
     private long _holdDue = long.MaxValue;
+    private uint _imagePid;
+    private string? _imageName;
+    private long _imageDue;
     private bool _exiting;
 
     internal KeyEngine(RowSpec[] rows, bool switchStop)
@@ -119,6 +135,9 @@ internal sealed class KeyEngine : IDisposable
                 return;
 
             Release(row);
+            // A running row keeps running: the scheduler starts a new Blur run
+            // with the new values once the row may press.
+            StopBlur(row);
             row.Configure(spec);
             row.DownDue = Stopwatch.GetTimestamp();
             _wake.Set();
@@ -306,13 +325,19 @@ internal sealed class KeyEngine : IDisposable
             row.DownDue = Stopwatch.GetTimestamp();
         row.Running = running;
         if (!running)
+        {
+            StopBlur(row);
             Release(row);
+        }
     }
 
     private void StopAllLocked()
     {
         foreach (var row in _rows)
+        {
             row.Running = false;
+            StopBlur(row);
+        }
         ReleaseAllHeld();
         _targetPid = 0;
         _watchDue = long.MaxValue;
@@ -429,6 +454,135 @@ internal sealed class KeyEngine : IDisposable
             Release(_held[i]);
     }
 
+    private static bool StartBlur(Row row)
+    {
+        var spec = row.Spec;
+        int kind = spec.Kind == "click" ? BlurEngine.KindClick : BlurEngine.KindKey;
+        int button = spec.Button switch
+        {
+            "left" => BlurEngine.ButtonLeft,
+            "right" => BlurEngine.ButtonRight,
+            "middle" => BlurEngine.ButtonMiddle,
+            _ => 0
+        };
+        ushort vk = kind == BlurEngine.KindKey ? row.Stroke.Vk : (ushort)0;
+        var at = kind == BlurEngine.KindClick ? spec.At : null;
+
+        ulong handle;
+        try
+        {
+            handle = BlurEngine.Start(kind, vk, button, at is null ? 0 : 1, at?.X ?? 0, at?.Y ?? 0,
+                                      spec.IntervalMs);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+                                     or BadImageFormatException)
+        {
+            Debug.WriteLine(ex.Message);
+            handle = 0;
+        }
+
+        if (handle == 0)
+            return false;
+
+        row.Blur = handle;
+        row.BlurPaused = false;
+        row.BlurBase = row.Count;
+        return true;
+    }
+
+    // Blur releases anything it holds before its thread ends.
+    private static void StopBlur(Row row)
+    {
+        if (row.Blur == 0)
+            return;
+
+        long final = BlurEngine.Stop(row.Blur);
+        row.Blur = 0;
+        row.BlurPaused = false;
+        if (final >= 0)
+            row.Count = Math.Max(row.Count, row.BlurBase + final);
+    }
+
+    private string? ForegroundImage(uint pid, long now)
+    {
+        if (pid != _imagePid || now >= _imageDue)
+        {
+            _imagePid = pid;
+            _imageName = Native.ExecutableName(pid);
+            _imageDue = now + ImageCachePeriod;
+        }
+        return _imageName;
+    }
+
+    // Blur rows: start a run once the row may press, pause it exactly when the old
+    // scheduler would skip a press, collect counts and notice runs Blur ended itself.
+    private long ProcessBlur(long now)
+    {
+        long poll = long.MaxValue;
+        foreach (var row in _rows)
+        {
+            if (row.Running && row.UsesBlur)
+                poll = Math.Min(poll, row.Period);
+        }
+        if (poll == long.MaxValue)
+            return long.MaxValue;
+
+        uint pid = Native.ForegroundPid(_owner);
+        if (ObserveForeground(pid))
+            return long.MaxValue;
+
+        bool changed = false;
+        bool active = false;
+        foreach (var row in _rows)
+        {
+            if (!row.Running || !row.UsesBlur)
+                continue;
+
+            bool blocked = pid == 0 || pid == OwnPid ||
+                (row.Spec.App is { } app &&
+                 !string.Equals(app, ForegroundImage(pid, now), StringComparison.OrdinalIgnoreCase));
+
+            if (row.Blur == 0)
+            {
+                if (!blocked && !StartBlur(row))
+                {
+                    row.Running = false;
+                    changed = true;
+                    continue;
+                }
+                active = true;
+                continue;
+            }
+
+            if (BlurEngine.Running(row.Blur) == 0)
+            {
+                StopBlur(row);
+                row.Running = false;
+                changed = true;
+                continue;
+            }
+
+            if (blocked != row.BlurPaused)
+            {
+                BlurEngine.Pause(row.Blur, blocked ? 1 : 0);
+                row.BlurPaused = blocked;
+            }
+
+            long clicks = BlurEngine.Clicks(row.Blur);
+            if (clicks >= 0)
+                row.Count = Math.Max(row.Count, row.BlurBase + clicks);
+            active = true;
+        }
+
+        if (changed)
+        {
+            UpdateWatch();
+            NotifyChanged();
+        }
+
+        return active ? now + Math.Clamp(poll, BlurPollMin, BlurPollMax) : long.MaxValue;
+    }
+
     private long ProcessDue()
     {
         long now = Stopwatch.GetTimestamp();
@@ -447,12 +601,13 @@ internal sealed class KeyEngine : IDisposable
         if (_holdDue <= now)
             PollHolds();
 
-        long next = Math.Min(_watchDue, _holdDue);
+        long blurDue = ProcessBlur(now);
+        long next = Math.Min(Math.Min(_watchDue, _holdDue), blurDue);
         uint imagePid = 0;
         string? imageName = null;
         foreach (var row in _rows)
         {
-            if (!row.Running)
+            if (!row.Running || row.UsesBlur)
                 continue;
 
             now = Stopwatch.GetTimestamp();
@@ -541,6 +696,12 @@ internal sealed class KeyEngine : IDisposable
         {
             try
             {
+                lock (_gate)
+                {
+                    foreach (var row in _rows)
+                        StopBlur(row);
+                }
+
                 for (int attempt = 0; attempt < 6; attempt++)
                 {
                     lock (_gate)
