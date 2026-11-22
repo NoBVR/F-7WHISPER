@@ -31,30 +31,57 @@ internal sealed class KeyEngine : IDisposable
         internal void Configure(RowSpec spec)
         {
             Spec = spec;
-            Stroke = Native.MapStroke(spec.Code, spec.Vk);
+            Stroke = Native.MapStroke(spec);
             Period = Milliseconds(spec.IntervalMs);
             Hold = Math.Min(Milliseconds(30), Period / 2);
         }
     }
 
+    private static readonly long WatchPeriod = Milliseconds(75);
+    private static readonly uint OwnPid = (uint)Environment.ProcessId;
+
     private readonly object _gate = new();
     private readonly AutoResetEvent _wake = new(false);
     private readonly List<Row> _rows;
-    // A removed or edited row can still owe a key-up if Windows rejected the first one.
+    // A removed or reconfigured row can still owe its original release.
     private readonly List<Row> _held = new();
     private readonly Thread _thread;
     private nint _owner;
+    private bool _switchStop;
+    private bool _stoppedOnSwitch;
+    private uint _targetPid;
+    private long _watchDue = long.MaxValue;
     private bool _exiting;
 
-    internal KeyEngine(RowSpec[] rows)
+    internal KeyEngine(RowSpec[] rows, bool switchStop)
     {
         _rows = rows.Select(spec => new Row(spec)).ToList();
-        _thread = new Thread(Run) { IsBackground = true, Name = "F-7WHISPER key scheduler" };
+        _switchStop = switchStop;
+        _thread = new Thread(Run) { IsBackground = true, Name = "F-7WHISPER input scheduler" };
         _thread.Start();
     }
 
     private static long Milliseconds(int ms) =>
         (long)Math.Round(ms * (Stopwatch.Frequency / 1000.0));
+
+    internal int RowCount
+    {
+        get { lock (_gate) return _rows.Count; }
+    }
+
+    internal bool SwitchStop
+    {
+        get { lock (_gate) return _switchStop; }
+        set
+        {
+            lock (_gate)
+            {
+                _switchStop = value;
+                UpdateWatch();
+                _wake.Set();
+            }
+        }
+    }
 
     internal void SetOwner(nint owner)
     {
@@ -65,7 +92,7 @@ internal sealed class KeyEngine : IDisposable
         }
     }
 
-    internal void Add(KeyChoice key, int interval)
+    internal void Add(RowSpec spec)
     {
         lock (_gate)
         {
@@ -75,26 +102,16 @@ internal sealed class KeyEngine : IDisposable
                 id = Guid.NewGuid().ToString("N")[..12];
             } while (Find(id) is not null);
 
-            _rows.Add(new Row(new RowSpec(id, key.Label, key.Code, key.Vk,
-                                          Settings.ClampInterval(interval))));
+            _rows.Add(new Row(spec with { Id = id }));
             _wake.Set();
         }
     }
 
-    internal void Edit(string id, KeyChoice? key, int? interval)
+    internal void Edit(RowSpec spec)
     {
         lock (_gate)
         {
-            if (Find(id) is not { } row)
-                return;
-
-            var spec = row.Spec;
-            if (key is not null)
-                spec = spec with { Label = key.Label, Code = key.Code, Vk = key.Vk };
-            if (interval.HasValue)
-                spec = spec with { IntervalMs = Settings.ClampInterval(interval.Value) };
-
-            if (spec == row.Spec)
+            if (Find(spec.Id) is not { } row)
                 return;
 
             Release(row);
@@ -110,8 +127,10 @@ internal sealed class KeyEngine : IDisposable
         {
             if (Find(id) is not { } row)
                 return;
+
             SetRunning(row, false);
             _rows.Remove(row);
+            UpdateWatch();
             _wake.Set();
         }
     }
@@ -122,7 +141,9 @@ internal sealed class KeyEngine : IDisposable
         {
             if (Find(id) is not { } row)
                 return;
+
             SetRunning(row, !row.Running);
+            UpdateWatch();
             _wake.Set();
         }
     }
@@ -131,10 +152,16 @@ internal sealed class KeyEngine : IDisposable
     {
         lock (_gate)
         {
-            foreach (var row in _rows)
-                SetRunning(row, running);
-            if (!running)
-                ReleaseAllHeld();
+            if (running)
+            {
+                foreach (var row in _rows)
+                    SetRunning(row, true);
+                UpdateWatch();
+            }
+            else
+            {
+                StopAllLocked();
+            }
             _wake.Set();
         }
     }
@@ -148,6 +175,61 @@ internal sealed class KeyEngine : IDisposable
         row.Running = running;
         if (!running)
             Release(row);
+    }
+
+    private void StopAllLocked()
+    {
+        foreach (var row in _rows)
+            row.Running = false;
+        ReleaseAllHeld();
+        _targetPid = 0;
+        _watchDue = long.MaxValue;
+    }
+
+    private void UpdateWatch()
+    {
+        if (!_switchStop || !_rows.Any(row => row.Running))
+        {
+            _targetPid = 0;
+            _watchDue = long.MaxValue;
+        }
+        else if (_watchDue == long.MaxValue)
+        {
+            // Capture synchronously so a hotkey start binds the app already in front.
+            _watchDue = Stopwatch.GetTimestamp() + WatchPeriod;
+            ObserveForeground(Native.ForegroundPid(_owner));
+        }
+    }
+
+    private bool ObserveForeground(uint pid)
+    {
+        // Windows can briefly report no foreground HWND during activation.
+        if (_watchDue == long.MaxValue || pid == 0)
+            return false;
+
+        if (_targetPid == 0)
+        {
+            if (pid != OwnPid)
+                _targetPid = pid;
+            return false;
+        }
+
+        if (pid == _targetPid)
+            return false;
+
+        StopAllLocked();
+        _stoppedOnSwitch = true;
+        return true;
+    }
+
+    internal bool TakeSwitchStopNotification()
+    {
+        lock (_gate)
+        {
+            bool pending = _stoppedOnSwitch;
+            _stoppedOnSwitch = false;
+            return pending;
+        }
     }
 
     internal RowSpec[] Configuration()
@@ -166,8 +248,8 @@ internal sealed class KeyEngine : IDisposable
                 row.ReportedCount = row.Count;
                 return (object)new
                 {
-                    spec.Id, spec.Label, spec.Code, spec.Vk, spec.IntervalMs,
-                    row.Running, row.Count
+                    spec.Id, spec.Kind, spec.Label, spec.Code, spec.Vk,
+                    spec.Button, spec.At, spec.App, spec.IntervalMs, row.Running, row.Count
                 };
             }).ToArray();
         }
@@ -218,36 +300,64 @@ internal sealed class KeyEngine : IDisposable
         long now = Stopwatch.GetTimestamp();
         for (int i = _held.Count - 1; i >= 0; i--)
         {
-            var row = _held[i];
-            if (row.UpDue <= now)
-                Release(row);
+            if (_held[i].UpDue <= now)
+                Release(_held[i]);
         }
 
-        long next = long.MaxValue;
+        if (_watchDue <= now)
+        {
+            _watchDue = now + WatchPeriod;
+            ObserveForeground(Native.ForegroundPid(_owner));
+        }
+
+        long next = _watchDue;
+        uint imagePid = 0;
+        string? imageName = null;
         foreach (var row in _rows)
         {
             if (!row.Running)
                 continue;
 
             now = Stopwatch.GetTimestamp();
-            if (row.DownDue <= now)
+            if (row.DownDue > now)
             {
-                // Keep the original phase and advance over missed periods in one step.
-                long periods = (now - row.DownDue) / row.Period + 1;
-                row.DownDue += periods * row.Period;
-
-                if (!row.Down && row.Stroke.Scan != 0 &&
-                    Native.CanPressIntoForeground(_owner) &&
-                    Native.SendStroke(row.Stroke, up: false))
-                {
-                    row.Down = true;
-                    row.HeldStroke = row.Stroke;
-                    row.UpDue = Stopwatch.GetTimestamp() + row.Hold;
-                    row.Count++;
-                    _held.Add(row);
-                }
+                next = Math.Min(next, row.DownDue);
+                continue;
             }
+
+            // Keep the original phase, including periods skipped by an app filter.
+            long periods = (now - row.DownDue) / row.Period + 1;
+            row.DownDue += periods * row.Period;
             next = Math.Min(next, row.DownDue);
+
+            uint pid = Native.ForegroundPid(_owner);
+            if (ObserveForeground(pid))
+            {
+                next = long.MaxValue;
+                break;
+            }
+            if (pid == 0 || pid == OwnPid || row.Down)
+                continue;
+
+            if (row.Spec.App is { } app)
+            {
+                if (pid != imagePid)
+                {
+                    imagePid = pid;
+                    imageName = Native.ExecutableName(pid);
+                }
+                if (!string.Equals(app, imageName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+
+            if (Native.SendStroke(row.Stroke, up: false, at: row.Spec.At))
+            {
+                row.Down = true;
+                row.HeldStroke = row.Stroke;
+                row.UpDue = Stopwatch.GetTimestamp() + row.Hold;
+                row.Count++;
+                _held.Add(row);
+            }
         }
 
         foreach (var row in _held)
@@ -294,7 +404,6 @@ internal sealed class KeyEngine : IDisposable
         {
             try
             {
-                // Normal key-ups succeed on the first call. Allow transient failures to clear.
                 for (int attempt = 0; attempt < 6; attempt++)
                 {
                     lock (_gate)

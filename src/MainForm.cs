@@ -13,46 +13,68 @@ internal sealed class MainForm : Form
 {
     private const string AppHost = "app.f7whisper.local";
     private const string PageUrl = "https://app.f7whisper.local/index.html";
-    private const int HotkeyId = 7;
+    private const int StartId = 6;
+    private const int StopId = 7;
     private static readonly Color Background = Color.FromArgb(10, 10, 10);
+    private static readonly string AppVersion =
+        typeof(MainForm).Assembly.GetName().Version!.ToString(3);
 
     private readonly WebView2 _web = new();
     private readonly Timer _countTimer = new() { Interval = 200 };
     private readonly Timer _saveTimer = new() { Interval = 500 };
+    private readonly Timer _pickTimer = new() { Interval = 15 };
     private readonly KeyEngine _engine;
-    private readonly Rectangle _initialBounds;
-    private readonly bool _startMaximized;
+    private readonly Screen _initialScreen;
+    private readonly Point? _initialPosition;
 
+    private HotkeyPair _hotkeys;
+    private bool _startOk;
+    private bool _stopOk;
+    private bool _paused;
+    private bool _pinned;
+    private bool _pickButtonDown;
     private bool _trackWindow;
-    private bool _restoreMaximized;
+    private bool _wasMinimized;
     private bool _ready;
-    private bool _hotkeyOk;
     private bool _closing;
     private bool _disposed;
-    private int _sizeKind = -1;
+    private int? _fitHeight;
+    private Size _fixedSize;
 
     internal MainForm()
     {
         var settings = Settings.Load();
-        _engine = new KeyEngine(settings.Rows);
-        (_initialBounds, _startMaximized) = InitialPlacement(settings.Window);
+        _engine = new KeyEngine(settings.Rows, settings.SwitchStop);
+        _hotkeys = settings.Hotkeys;
+        _pinned = settings.Pinned;
+
+        var primary = Screen.PrimaryScreen ?? Screen.AllScreens[0];
+        _initialScreen = primary;
+        if (settings.Window is { } saved)
+        {
+            var point = new Point(saved.X, saved.Y);
+            if (Screen.AllScreens.FirstOrDefault(screen => screen.Bounds.Contains(point)) is { } screen)
+            {
+                _initialScreen = screen;
+                _initialPosition = point;
+            }
+        }
 
         Text = "F-7WHISPER";
         using (var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("F7Whisper.app.ico"))
         {
             if (iconStream is not null) Icon = new Icon(iconStream);
         }
+
         BackColor = Background;
         AutoScaleMode = AutoScaleMode.None;
         StartPosition = FormStartPosition.Manual;
-
-        // Sizable supplies the caption, sizing frame, system menu and min/max styles.
-        // WM_NCCALCSIZE below gives their drawing area back to the page.
-        FormBorderStyle = FormBorderStyle.Sizable;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
         MinimizeBox = true;
-        MaximizeBox = true;
-        Bounds = _initialBounds;
-        TopMost = settings.Pinned;
+        MaximizeBox = false;
+        SizeGripStyle = SizeGripStyle.Hide;
+        PlaceWindow(_initialScreen.WorkingArea, _initialPosition, (int)Native.GetDpiForSystem());
+        TopMost = _pinned;
 
         _web.DefaultBackgroundColor = Background;
         _web.Dock = DockStyle.Fill;
@@ -60,33 +82,49 @@ internal sealed class MainForm : Form
 
         _countTimer.Tick += (_, _) =>
         {
-            if (_ready && !_closing && _engine.TakeChangedCounts() is { } counts)
+            if (!_ready || _closing)
+                return;
+
+            if (_engine.TakeSwitchStopNotification())
+                SendState();
+            else if (_engine.TakeChangedCounts() is { } counts)
                 Post(new { type = "counts", counts });
         };
+
         _saveTimer.Tick += (_, _) =>
         {
             _saveTimer.Stop();
             SaveSettings();
         };
+
+        _pickTimer.Tick += (_, _) => PollPoint();
     }
 
-    private static (Rectangle Bounds, bool Maximized) InitialPlacement(SavedWindow? saved)
+    private void PlaceWindow(Rectangle area, Point? location, int dpi)
     {
-        if (saved is { Width: > 0, Height: > 0 } &&
-            (long)saved.X + saved.Width <= int.MaxValue &&
-            (long)saved.Y + saved.Height <= int.MaxValue)
-        {
-            var bounds = new Rectangle(saved.X, saved.Y, saved.Width, saved.Height);
-            if (Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(bounds)))
-                return (bounds, saved.Maximized);
-        }
+        if (area.Width <= 0 || area.Height <= 0)
+            return;
 
-        var area = (Screen.PrimaryScreen ?? Screen.AllScreens[0]).WorkingArea;
-        uint dpi = Native.GetDpiForSystem();
-        int width = Native.Scale(720, dpi);
-        int height = Native.Scale(340, dpi);
-        return (new Rectangle(area.Left + (area.Width - width) / 2,
-                              area.Top + (area.Height - height) / 2, width, height), false);
+        int rows = _engine.RowCount;
+        long heightCss = _fitHeight ?? (40L + 56 + 36 + (rows == 0 ? 96 : 48L * rows) + 28);
+        double scale = (dpi > 0 ? dpi : 96) / 96.0;
+        int width = (int)Math.Clamp(Math.Round(720 * scale), 1, area.Width);
+        int height = (int)Math.Clamp(Math.Round(heightCss * scale), 1, area.Height);
+        int x = location?.X ?? area.Left + (area.Width - width) / 2;
+        int y = location?.Y ?? area.Top + (area.Height - height) / 2;
+        var bounds = new Rectangle(Math.Clamp(x, area.Left, area.Right - width),
+                                   Math.Clamp(y, area.Top, area.Bottom - height), width, height);
+
+        // WM_GETMINMAXINFO can arrive synchronously during the bounds change.
+        _fixedSize = bounds.Size;
+        if (Bounds != bounds)
+            Bounds = bounds;
+    }
+
+    private void FitWindow()
+    {
+        if (_trackWindow && !_closing && WindowState == FormWindowState.Normal)
+            PlaceWindow(Screen.FromHandle(Handle).WorkingArea, Location, DeviceDpi);
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -94,39 +132,47 @@ internal sealed class MainForm : Form
         base.OnHandleCreated(e);
         Native.ApplyFrame(Handle);
         _engine.SetOwner(Handle);
-        _hotkeyOk = Native.RegisterHotKey(Handle, HotkeyId, Native.ModNoRepeat, Native.VkF7);
+        RegisterHotkeys();
         SendState();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
-        if (_hotkeyOk)
-        {
-            Native.UnregisterHotKey(Handle, HotkeyId);
-            _hotkeyOk = false;
-        }
-
+        UnregisterHotkeys();
         if (!_closing)
             _engine.SetOwner(0);
-
         base.OnHandleDestroyed(e);
     }
 
     protected override void OnLoad(EventArgs e)
     {
-        // The handle is now on the destination monitor and has that monitor's DPI.
-        uint dpi = (uint)DeviceDpi;
-        Bounds = new Rectangle(_initialBounds.Location, new Size(
-            Math.Max(_initialBounds.Width, Native.Scale(560, dpi)),
-            Math.Max(_initialBounds.Height, Native.Scale(260, dpi))));
-
+        // The hidden HWND now has the destination monitor's actual DPI.
+        PlaceWindow(_initialScreen.WorkingArea, _initialPosition, DeviceDpi);
         _trackWindow = true;
-        _restoreMaximized = _startMaximized;
-        if (_startMaximized)
-            WindowState = FormWindowState.Maximized;
-
         base.OnLoad(e);
     }
+
+    private void UnregisterHotkeys()
+    {
+        if (_startOk) Native.UnregisterHotKey(Handle, StartId);
+        if (_stopOk) Native.UnregisterHotKey(Handle, StopId);
+        _startOk = false;
+        _stopOk = false;
+    }
+
+    private void RegisterHotkeys()
+    {
+        UnregisterHotkeys();
+        if (_paused || _closing || !IsHandleCreated)
+            return;
+
+        _startOk = Register(StartId, _hotkeys.Start);
+        _stopOk = Register(StopId, _hotkeys.Stop);
+    }
+
+    private bool Register(int id, Hotkey? key) =>
+        key is not null &&
+        Native.RegisterHotKey(Handle, id, Native.ModNoRepeat | key.Modifiers, (uint)key.Vk);
 
     protected override async void OnShown(EventArgs e)
     {
@@ -150,6 +196,7 @@ internal sealed class MainForm : Form
             var options = core.Settings;
             options.AreDefaultContextMenusEnabled = false;
             options.IsZoomControlEnabled = false;
+            options.IsPinchZoomEnabled = false;
             options.IsStatusBarEnabled = false;
             options.AreBrowserAcceleratorKeysEnabled = false;
 #if DEBUG
@@ -164,10 +211,20 @@ internal sealed class MainForm : Form
             core.NavigationStarting += (_, args) =>
             {
                 if (!string.Equals(args.Uri, PageUrl, StringComparison.Ordinal))
+                {
                     args.Cancel = true;
-                else
-                    _ready = false;
+                    return;
+                }
+
+                _ready = false;
+                CancelPick();
+                if (_paused)
+                {
+                    _paused = false;
+                    RegisterHotkeys();
+                }
             };
+
             core.NewWindowRequested += (_, args) => args.Handled = true;
             core.WebMessageReceived += OnWebMessage;
             _countTimer.Start();
@@ -201,112 +258,149 @@ internal sealed class MainForm : Form
         {
             using var document = JsonDocument.Parse(e.WebMessageAsJson);
             var message = document.RootElement;
-            if (message.ValueKind != JsonValueKind.Object)
-                return;
+            string? id = message.Field("id").Text();
 
-            string? id = StringField(message, "id");
-            switch (StringField(message, "type"))
+            switch (message.Field("type").Text())
             {
                 case "ready":
+                    CancelPick();
+                    _paused = false;
+                    RegisterHotkeys();
                     _ready = true;
                     SendState();
                     return;
 
                 case "window":
-                    string? action = StringField(message, "action");
-                    string? edge = StringField(message, "edge");
-                    // Leave the WebView2 callback before entering a native modal loop.
-                    BeginInvoke(() => WindowCommand(action, edge));
+                    string? action = message.Field("action").Text();
+                    if (action is "minimize" or "close" or "drag")
+                        BeginInvoke(() => WindowCommand(action));
+                    return;
+
+                case "fit":
+                    if (message.Field("height").Integer() is int height && height > 0)
+                    {
+                        // WebView2 delivers this callback on its owning WinForms UI thread.
+                        _fitHeight = height;
+                        FitWindow();
+                    }
                     return;
 
                 case "pin":
-                    if (!message.TryGetProperty("on", out var pin) ||
-                        pin.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    if (message.Field("on").Boolean() is not bool pin)
                         return;
-                    TopMost = pin.GetBoolean();
+                    _pinned = pin;
+                    TopMost = _pinned || _pickTimer.Enabled;
                     break;
 
                 case "toggle" when id is not null:
                     _engine.Toggle(id);
-                    break;
+                    SendState();
+                    return;
 
                 case "startAll":
                     _engine.SetAll(true);
-                    break;
+                    SendState();
+                    return;
 
                 case "stopAll":
                     _engine.SetAll(false);
-                    break;
+                    SendState();
+                    return;
 
                 case "add":
-                    if (!message.TryGetProperty("key", out var addKey) ||
-                        ReadKey(addKey) is not { } key ||
-                        !message.TryGetProperty("intervalMs", out var addInterval) ||
-                        ReadInterval(addInterval) is not int interval)
+                    if (RowSpec.Read(message.Field("input"), "", fromFile: false) is not { } added)
                         return;
-                    _engine.Add(key, interval);
+                    _engine.Add(added);
+                    if (_fitHeight is null) FitWindow();
                     break;
 
                 case "edit" when id is not null:
-                    KeyChoice? replacement = null;
-                    int? duration = null;
-                    if (message.TryGetProperty("key", out var editKey))
-                    {
-                        replacement = ReadKey(editKey);
-                        if (replacement is null)
-                            return;
-                    }
-                    if (message.TryGetProperty("intervalMs", out var editInterval))
-                    {
-                        duration = ReadInterval(editInterval);
-                        if (duration is null)
-                            return;
-                    }
-                    if (replacement is null && duration is null)
+                    if (RowSpec.Read(message.Field("input"), id, fromFile: false) is not { } edited)
                         return;
-                    _engine.Edit(id, replacement, duration);
+                    _engine.Edit(edited);
                     break;
 
                 case "remove" when id is not null:
                     _engine.Remove(id);
+                    if (_fitHeight is null) FitWindow();
                     break;
+
+                case "settings":
+                    if (message.Field("switchStop").Boolean() is not bool switchStop ||
+                        HotkeyPair.Read(message.Field("hotkeys"), fromFile: false) is not { } keys)
+                        return;
+                    _hotkeys = keys;
+                    _engine.SwitchStop = switchStop;
+                    RegisterHotkeys();
+                    break;
+
+                case "pauseHotkeys":
+                    if (message.Field("on").Boolean() is bool paused)
+                    {
+                        _paused = paused;
+                        RegisterHotkeys();
+                        SendState();
+                    }
+                    return;
+
+                case "listApps":
+                    Post(new { type = "apps", apps = Native.ListApps(Handle) });
+                    return;
+
+                case "pickPoint":
+                    _pickButtonDown = Native.LeftButtonDown;
+                    TopMost = true;
+                    _pickTimer.Start();
+                    return;
+
+                case "pickCancel":
+                    CancelPick();
+                    return;
 
                 default:
                     return;
             }
 
-            Changed();
+            ScheduleSave();
+            SendState();
         }
         catch (JsonException)
         {
-            // An incomplete or malformed message cannot change a row.
+            // Invalid JSON cannot change the configuration.
+        }
+        catch (InvalidOperationException ex)
+        {
+            // JsonElement can also reject a string with an invalid escaped surrogate.
+            System.Diagnostics.Debug.WriteLine(ex.Message);
         }
     }
 
-    private static string? StringField(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static KeyChoice? ReadKey(JsonElement element)
+    private void CancelPick()
     {
-        if (element.ValueKind != JsonValueKind.Object ||
-            StringField(element, "label") is not string label ||
-            StringField(element, "code") is not string code ||
-            !element.TryGetProperty("vk", out var value) ||
-            value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int vk) ||
-            !KeyChoice.IsValid(label, code, vk))
-            return null;
+        if (!_pickTimer.Enabled)
+            return;
 
-        return new KeyChoice(label, code, vk);
+        _pickTimer.Stop();
+        TopMost = _pinned;
     }
 
-    private static int? ReadInterval(JsonElement value) =>
-        value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long ms)
-            ? Settings.ClampInterval(ms)
-            : null;
+    private void PollPoint()
+    {
+        bool down = Native.LeftButtonDown;
+        bool pressed = down && !_pickButtonDown;
+        _pickButtonDown = down;
+        if (!pressed || !Native.TryGetOutsidePoint(Handle, out var point) || point is null)
+            return;
 
-    private void WindowCommand(string? action, string? edge)
+        CancelPick();
+        if (WindowState == FormWindowState.Minimized)
+            Native.RestoreWindow(Handle);
+        Activate();
+        if (_ready && !_closing)
+            Post(new { type = "point", point.X, point.Y });
+    }
+
+    private void WindowCommand(string action)
     {
         if (_closing || IsDisposed)
             return;
@@ -316,20 +410,12 @@ internal sealed class MainForm : Form
             case "minimize":
                 WindowState = FormWindowState.Minimized;
                 break;
-            case "maximize":
-                WindowState = WindowState == FormWindowState.Maximized
-                    ? FormWindowState.Normal : FormWindowState.Maximized;
-                break;
             case "close":
                 Close();
                 break;
             case "drag":
-                Native.BeginMouseOperation(Handle, Native.HtCaption);
-                break;
-            case "resize" when WindowState != FormWindowState.Maximized:
-                int hit = Native.EdgeHit(edge);
-                if (hit != 0)
-                    Native.BeginMouseOperation(Handle, hit);
+                // Leave the WebView2 callback before entering the native move loop.
+                Native.BeginDrag(Handle);
                 break;
         }
     }
@@ -339,47 +425,68 @@ internal sealed class MainForm : Form
         switch (m.Msg)
         {
             case Native.WmNcCalcSize:
-                Native.AdjustClient(m.HWnd, m.LParam);
+                // Retain the DWM frame styles and give the entire window to WebView2.
                 m.Result = 0;
+                return;
+
+            case Native.WmNcHitTest:
+                m.Result = 1; // HTCLIENT, including every edge and corner
                 return;
 
             case Native.WmGetMinMaxInfo:
                 base.WndProc(ref m);
-                Native.AdjustTracking(m.HWnd, m.LParam);
+                Native.FixTracking(m.LParam, _fixedSize);
                 return;
 
-            case Native.WmHotkey when m.WParam == HotkeyId && !_closing:
-                _engine.SetAll(false);
-                Changed();
+            case Native.WmSysCommand when ((int)m.WParam & 0xfff0) is 0xf000 or 0xf030:
+                // SC_SIZE and SC_MAXIMIZE, including system-menu and keyboard requests.
+                m.Result = 0;
+                return;
+
+            case Native.WmHotkey when m.WParam == StartId || m.WParam == StopId:
+                bool start = m.WParam == StartId;
+                var key = start ? _hotkeys.Start : _hotkeys.Stop;
+                uint chord = unchecked((uint)(long)m.LParam);
+                if (!_closing && !_paused && (start ? _startOk : _stopOk) && key is not null &&
+                    (chord >> 16) == (uint)key.Vk && (chord & 0x0f) == key.Modifiers)
+                {
+                    _engine.SetAll(start);
+                    SendState();
+                }
                 m.Result = 0;
                 return;
         }
 
         base.WndProc(ref m);
-
         if (!_trackWindow || _closing)
             return;
 
-        if (m.Msg == Native.WmSize)
+        switch (m.Msg)
         {
-            int kind = (int)m.WParam;
-            if (kind != Native.SizeMinimized)
-                _restoreMaximized = kind == Native.SizeMaximized;
-            if (_sizeKind != kind)
-            {
-                _sizeKind = kind;
-                SendState();
-            }
+            case Native.WmMove:
+                if (WindowState == FormWindowState.Normal)
+                    ScheduleSave();
+                break;
+
+            case Native.WmSize:
+                if (m.WParam == 1) // SIZE_MINIMIZED
+                {
+                    _wasMinimized = true;
+                }
+                else if (_wasMinimized)
+                {
+                    _wasMinimized = false;
+                    BeginInvoke((Action)FitWindow);
+                }
+                break;
+
+            case Native.WmDpiChanged:
+            case 0x007E: // WM_DISPLAYCHANGE
+            case 0x001A: // WM_SETTINGCHANGE, including work-area changes
+            case 0x0232: // WM_EXITSIZEMOVE
+                FitWindow();
+                break;
         }
-
-        if (m.Msg is Native.WmSize or Native.WmMove)
-            ScheduleSave();
-    }
-
-    private void Changed()
-    {
-        SendState();
-        ScheduleSave();
     }
 
     private void SendState()
@@ -390,11 +497,14 @@ internal sealed class MainForm : Form
         Post(new
         {
             type = "state",
+            version = AppVersion,
+            platform = "windows",
+            accessOk = true,
+            pinned = _pinned,
             rows = _engine.Snapshot(),
-            pinned = TopMost,
-            maximized = WindowState == FormWindowState.Maximized,
-            hotkey = "F7",
-            hotkeyOk = _hotkeyOk
+            hotkeys = _hotkeys,
+            hotkeyOk = new { start = _startOk, stop = _stopOk },
+            switchStop = _engine.SwitchStop
         });
     }
 
@@ -412,12 +522,8 @@ internal sealed class MainForm : Form
     private void SaveSettings()
     {
         var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-            bounds = _initialBounds;
-
-        new Settings(_engine.Configuration(), TopMost,
-            new SavedWindow(bounds.X, bounds.Y, bounds.Width, bounds.Height, _restoreMaximized))
-            .Save();
+        var position = new SavedWindow(bounds.X, bounds.Y);
+        new Settings(_engine.Configuration(), _pinned, position, _hotkeys, _engine.SwitchStop).Save();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -427,6 +533,8 @@ internal sealed class MainForm : Form
             return;
 
         _closing = true;
+        CancelPick();
+        UnregisterHotkeys();
         _countTimer.Stop();
         _saveTimer.Stop();
         _engine.SetAll(false);
@@ -439,6 +547,7 @@ internal sealed class MainForm : Form
         {
             _disposed = true;
             _closing = true;
+            _pickTimer.Dispose();
             _countTimer.Dispose();
             _saveTimer.Dispose();
             _engine.Dispose();

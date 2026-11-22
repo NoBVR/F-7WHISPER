@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
 };
 
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Key {
     pub label: String,
     pub code: String,
@@ -15,38 +15,207 @@ pub struct Key {
 }
 
 impl Key {
-    pub fn valid(&self) -> bool {
+    fn valid(&self) -> bool {
         !self.label.is_empty() && !self.code.trim().is_empty() && (1..255).contains(&self.vk)
     }
 }
 
-pub fn clamp(ms: i64) -> i64 {
-    ms.clamp(20, 86_400_000)
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
 }
 
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Point {
+    pub fn valid(self) -> bool {
+        (-100_000..=100_000).contains(&self.x) && (-100_000..=100_000).contains(&self.y)
+    }
+}
+
+pub fn app_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.chars().take(260).collect())
+}
+
+pub fn same_name(a: &str, b: &str) -> bool {
+    a == b || (cfg!(windows) && a.to_lowercase() == b.to_lowercase())
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Action {
+    Key(Key),
+    Click { button: Button, at: Option<Point> },
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Input {
+    #[serde(flatten)]
+    pub action: Action,
+    pub interval_ms: i64,
+    pub app: Option<String>,
+}
+
+impl Input {
+    pub fn from_page(value: &Value) -> Option<Self> {
+        Self::read(value, false)
+    }
+
+    fn read(value: &Value, saved_row: bool) -> Option<Self> {
+        let kind = match value.get("kind") {
+            Some(kind) => kind.as_str()?,
+            None if saved_row => "key",
+            None => return None,
+        };
+        let action = match kind {
+            "key" => {
+                let fields = if saved_row { value } else { value.get("key")? };
+                let key: Key = serde_json::from_value(fields.clone()).ok()?;
+                if !key.valid() {
+                    return None;
+                }
+                Action::Key(key)
+            }
+            "click" => {
+                let button = serde_json::from_value(value.get("button")?.clone()).ok()?;
+                let at: Option<Point> =
+                    serde_json::from_value(value.get("at").cloned().unwrap_or(Value::Null)).ok()?;
+                if at.is_some_and(|point| !point.valid()) {
+                    return None;
+                }
+                Action::Click { button, at }
+            }
+            _ => return None,
+        };
+        let app = match value.get("app") {
+            None | Some(Value::Null) => None,
+            Some(name) => app_name(name.as_str()?),
+        };
+        let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(20, 86_400_000);
+        Some(Self { action, interval_ms, app })
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct RowSpec {
     pub id: String,
     #[serde(flatten)]
+    pub input: Input,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Hotkey {
+    #[serde(flatten)]
     pub key: Key,
-    pub interval_ms: i64,
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub meta: bool,
+}
+
+impl Hotkey {
+    fn function(code: &str, vk: u16) -> Self {
+        Self {
+            key: Key { label: code.into(), code: code.into(), vk },
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        }
+    }
+
+    fn same_binding(&self, other: &Self) -> bool {
+        let same_key = if cfg!(windows) {
+            self.key.vk == other.key.vk
+        } else {
+            self.key.code == other.key.code
+        };
+        same_key && self.ctrl == other.ctrl && self.alt == other.alt
+            && self.shift == other.shift && self.meta == other.meta
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Hotkeys {
+    pub start: Option<Hotkey>,
+    pub stop: Option<Hotkey>,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Self {
+            start: Some(Hotkey::function("F6", 117)),
+            stop: Some(Hotkey::function("F7", 118)),
+        }
+    }
+}
+
+impl Hotkeys {
+    pub fn normalized(mut self) -> Self {
+        self.start = self.start.filter(|h| h.key.valid());
+        self.stop = self.stop.filter(|h| h.key.valid());
+        if let (Some(start), Some(stop)) = (&self.start, &self.stop) {
+            if start.same_binding(stop) {
+                self.start = None;
+            }
+        }
+        self
+    }
+
+    fn load(value: Option<&Value>) -> Self {
+        let defaults = Self::default();
+        let binding = |name: &str, default: Option<Hotkey>| {
+            match value.and_then(|v| v.get(name)) {
+                None => default,
+                Some(v) => serde_json::from_value::<Hotkey>(v.clone()).ok(),
+            }
+        };
+        Self {
+            start: binding("start", defaults.start),
+            stop: binding("stop", defaults.stop),
+        }.normalized()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Bounds {
+pub struct Position {
     pub x: i32,
     pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    pub maximized: bool,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub rows: Vec<RowSpec>,
     pub pinned: bool,
-    pub window: Option<Bounds>,
+    pub window: Option<Position>,
+    pub hotkeys: Hotkeys,
+    pub switch_stop: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            pinned: false,
+            window: None,
+            hotkeys: Hotkeys::default(),
+            switch_stop: true,
+        }
+    }
 }
 
 fn directory() -> Option<PathBuf> {
@@ -63,22 +232,21 @@ impl Settings {
         let doc: Value = serde_json::from_reader(file).ok()?;
         let mut seen = HashSet::new();
         let mut rows = Vec::new();
-
-        for item in doc.get("rows")?.as_array()? {
-            let Ok(mut row) = serde_json::from_value::<RowSpec>(item.clone()) else {
-                continue;
-            };
-            if row.id.trim().is_empty() || !row.key.valid() || !seen.insert(row.id.clone()) {
-                continue;
+        if let Some(items) = doc.get("rows").and_then(Value::as_array) {
+            for item in items {
+                let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
+                let Some(input) = Input::read(item, true) else { continue };
+                if !id.trim().is_empty() && seen.insert(id) {
+                    rows.push(RowSpec { id: id.to_owned(), input });
+                }
             }
-            row.interval_ms = clamp(row.interval_ms);
-            rows.push(row);
         }
-
         Some(Self {
             rows,
             pinned: doc.get("pinned").and_then(Value::as_bool).unwrap_or(false),
             window: doc.get("window").and_then(|v| serde_json::from_value(v.clone()).ok()),
+            hotkeys: Hotkeys::load(doc.get("hotkeys")),
+            switch_stop: doc.get("switchStop").and_then(Value::as_bool).unwrap_or(true),
         })
     }
 

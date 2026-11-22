@@ -1,92 +1,94 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod engine;
+mod hotkeys;
 mod settings;
 mod wait;
 mod window;
 
-#[cfg(windows)]
-#[path = "windows_keys.rs"]
+#[cfg_attr(windows, path = "windows_keys.rs")]
+#[cfg_attr(target_os = "macos", path = "macos_keys.rs")]
 mod keys;
 
-#[cfg(target_os = "macos")]
-#[path = "macos_keys.rs"]
-mod keys;
+#[cfg_attr(windows, path = "desktop_windows.rs")]
+#[cfg_attr(target_os = "macos", path = "desktop_macos.rs")]
+mod desktop;
 
 use engine::Engine;
-use serde::{Deserialize, Deserializer};
+use hotkeys::Bindings;
+use serde::Deserialize;
 use serde_json::{json, Value};
-use settings::{Bounds, Key, Settings};
+use settings::{Hotkeys, Input, Position, Settings};
 use std::{
+    collections::BTreeMap,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow, WindowEvent};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const COUNTS: Duration = Duration::from_millis(200);
 const SAVE: Duration = Duration::from_millis(500);
 const ACCESS: Duration = Duration::from_millis(1500);
-
-fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
+const PICK: Duration = Duration::from_millis(8);
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Message {
     Ready,
-    Window { action: String, edge: Option<String> },
+    Window { action: String },
     Pin { on: bool },
     Toggle { id: String },
     StartAll,
     StopAll,
-    Add {
-        key: Key,
-        #[serde(rename = "intervalMs")]
-        interval_ms: i64,
-    },
-    Edit {
-        id: String,
-        #[serde(default, deserialize_with = "present")]
-        key: Option<Key>,
-        #[serde(default, rename = "intervalMs", deserialize_with = "present")]
-        interval_ms: Option<i64>,
-    },
+    Add { input: Value },
+    Edit { id: String, input: Value },
     Remove { id: String },
+    Settings {
+        hotkeys: Hotkeys,
+        #[serde(rename = "switchStop")]
+        switch_stop: bool,
+    },
+    PauseHotkeys { on: bool },
+    ListApps,
+    PickPoint,
+    PickCancel,
+    Fit { height: i64 },
     OpenAccessSettings,
     #[serde(skip)]
     Activate,
+    #[serde(skip)]
+    Publish,
+    #[serde(skip)]
+    PluginHotkey { slot: usize, generation: u64 },
+    #[cfg(windows)]
+    #[serde(skip)]
+    NativeHotkey { slot: usize, signature: u32 },
 }
 
+#[derive(Clone)]
 struct Inbox {
     messages: Sender<Message>,
     wake: Sender<()>,
 }
 
-fn enqueue(app: &AppHandle, message: Message) {
-    let inbox = app.state::<Inbox>();
-    if inbox.messages.send(message).is_ok() {
-        // Commands, the F7 hotkey and single-instance callbacks run on the main thread, where
-        // run_on_main_thread runs inline and does not wake the event loop; a helper thread
-        // posts the wake-up instead (see main).
-        let _ = inbox.wake.send(());
+impl Inbox {
+    fn post(&self, message: Message) {
+        if self.messages.send(message).is_ok() {
+            // Main-thread callers cannot wake the loop with run_on_main_thread:
+            // it executes inline there. Only the helper posts the wake-up.
+            let _ = self.wake.send(());
+        }
     }
 }
 
 #[tauri::command]
 fn page_message(app: AppHandle, msg: Value) {
     if let Ok(message) = serde_json::from_value(msg) {
-        enqueue(&app, message);
+        app.state::<Inbox>().post(message);
     }
 }
 
-// Wake the UI event loop at its next deadline, including when the window is minimized.
 struct Alarm {
     sender: Sender<Instant>,
     armed: Option<Instant>,
@@ -124,20 +126,30 @@ impl Alarm {
     }
 }
 
+struct Picker {
+    was_down: bool,
+    due: Instant,
+}
+
 struct Host {
     window: WebviewWindow,
     engine: Engine,
     alarm: Alarm,
-    bounds: Option<Bounds>,
+    position: Option<Position>,
+    height: i64,
+    refit: bool,
+    geometry_changed: bool,
     pinned: bool,
-    maximized: bool,
-    hotkey_ok: bool,
+    hotkeys: Hotkeys,
+    bindings: Bindings,
+    paused: bool,
+    switch_stop: bool,
+    picker: Option<Picker>,
     access_ok: bool,
     prompted: bool,
     ready: bool,
     shown: bool,
     closed: bool,
-    geometry_changed: bool,
     show_at: Option<Instant>,
     counts_at: Option<Instant>,
     save_at: Option<Instant>,
@@ -148,43 +160,38 @@ impl Host {
     fn new(app: &AppHandle) -> Self {
         let window = app.get_webview_window("main").expect("configured main window");
         let settings = Settings::load();
-        let restored = settings.window.and_then(|b| window::restore(&window, b));
-        if restored.is_none() {
-            let _ = window.center();
-        }
-        let maximized = restored.is_some_and(|b| b.maximized);
-        let bounds = restored.or_else(|| window::normal_bounds(&window));
+        let height = window::initial_height(settings.rows.len());
+        window::initialize(&window, settings.window, height);
+        let position = window::position(&window).or(settings.window);
         let _ = window.set_always_on_top(settings.pinned);
         let pinned = window.is_always_on_top().unwrap_or(settings.pinned);
+        let inbox = app.state::<Inbox>().inner().clone();
         let engine = Engine::new(
-            settings.rows,
-            keys::Keyboard::new(&window),
-            window.is_focused().unwrap_or(true),
+            settings.rows, keys::Keyboard::new(&window), window.is_focused().unwrap_or(true),
+            settings.switch_stop, move || inbox.post(Message::Publish),
         );
-
-        let plugin = tauri_plugin_global_shortcut::Builder::new().build();
-        let hotkey_ok = app.plugin(plugin).is_ok()
-            && app.global_shortcut().on_shortcut("F7", |app, _, event| {
-                if event.state == ShortcutState::Pressed {
-                    enqueue(app, Message::StopAll);
-                }
-            }).is_ok();
-
+        let mut bindings = Bindings::new(&window);
+        bindings.apply(app, &settings.hotkeys, false);
         let now = Instant::now();
         Self {
             window,
             engine,
             alarm: Alarm::new(app.clone()),
-            bounds,
+            position,
+            height,
+            refit: false,
+            geometry_changed: true,
             pinned,
-            maximized,
-            hotkey_ok,
+            hotkeys: settings.hotkeys,
+            bindings,
+            paused: false,
+            switch_stop: settings.switch_stop,
+            picker: None,
             access_ok: keys::trusted(),
             prompted: false,
             ready: false,
             shown: false,
             closed: false,
-            geometry_changed: true,
             show_at: Some(now + Duration::from_secs(3)),
             counts_at: None,
             save_at: None,
@@ -192,52 +199,49 @@ impl Host {
         }
     }
 
-    fn reveal(&mut self) {
-        if !self.shown {
-            if self.window.show().is_err() {
-                self.show_at = Some(Instant::now() + Duration::from_millis(250));
-                return;
-            }
-            self.shown = true;
-            self.show_at = None;
-            if self.maximized {
-                let _ = self.window.maximize();
-            }
-            let _ = self.window.set_focus();
-            self.engine.focus(self.window.is_focused().unwrap_or(true));
-            self.geometry_changed = true;
+    fn emit(&self, value: Value) {
+        if self.ready && !self.closed {
+            let _ = self.window.emit_to("main", "host", value);
         }
+    }
+
+    fn reveal(&mut self) {
+        if self.shown {
+            return;
+        }
+        if self.window.show().is_err() {
+            self.show_at = Some(Instant::now() + Duration::from_millis(250));
+            return;
+        }
+        self.shown = true;
+        self.show_at = None;
+        let _ = self.window.set_focus();
+        self.engine.focus(self.window.is_focused().unwrap_or(true));
+        self.geometry_changed = true;
+    }
+
+    fn activate(&mut self) {
+        self.reveal();
+        if self.window.is_minimized().unwrap_or(false) {
+            let _ = self.window.unminimize();
+        }
+        let _ = self.window.show();
+        let _ = self.window.set_focus();
     }
 
     fn dirty(&mut self) {
         self.save_at = Some(Instant::now() + SAVE);
     }
 
-    fn capture(&mut self) -> bool {
-        if !self.shown {
-            return false;
-        }
-        let Ok(minimized) = self.window.is_minimized() else { return false };
-        let Ok(zoomed) = self.window.is_maximized() else { return false };
-        let fullscreen = self.window.is_fullscreen().unwrap_or(false);
-        let maximized = !minimized && (zoomed || fullscreen);
-        let old = self.bounds;
-
-        if !minimized && !fullscreen {
-            if zoomed {
-                if let Some(bounds) = &mut self.bounds {
-                    bounds.maximized = true;
+    fn capture(&mut self) {
+        if self.shown {
+            if let Some(p) = window::position(&self.window) {
+                if self.position != Some(p) {
+                    self.position = Some(p);
+                    self.dirty();
                 }
-            } else if let Some(bounds) = window::normal_bounds(&self.window) {
-                self.bounds = Some(bounds);
             }
         }
-        if self.bounds != old {
-            self.dirty();
-        }
-        let changed = self.maximized != maximized;
-        self.maximized = maximized;
-        changed
     }
 
     fn state(&mut self) {
@@ -253,21 +257,22 @@ impl Host {
         } else {
             self.counts_at = None;
         }
-        let _ = self.window.emit_to("main", "host", json!({
+        self.emit(json!({
             "type": "state",
-            "rows": rows,
-            "pinned": self.pinned,
-            "maximized": self.maximized,
-            "hotkey": "F7",
-            "hotkeyOk": self.hotkey_ok,
+            "version": env!("CARGO_PKG_VERSION"),
             "platform": std::env::consts::OS,
-            "accessOk": self.access_ok
+            "accessOk": self.access_ok,
+            "pinned": self.pinned,
+            "rows": rows,
+            "hotkeys": self.hotkeys,
+            "hotkeyOk": { "start": self.bindings.ok[0], "stop": self.bindings.ok[1] },
+            "switchStop": self.switch_stop
         }));
     }
 
     fn refresh_access(&mut self) -> bool {
         let trusted = keys::trusted();
-        if self.access_ok == trusted {
+        if trusted == self.access_ok {
             return false;
         }
         self.access_ok = trusted;
@@ -286,11 +291,23 @@ impl Host {
         self.access_ok
     }
 
+    fn all(&mut self, start: bool) {
+        if !start || self.allow_start() {
+            self.engine.change(|rows| rows.set_running(None, start));
+        }
+    }
+
+    fn rebind(&mut self) {
+        self.bindings.apply(self.window.app_handle(), &self.hotkeys, self.paused);
+    }
+
     fn save(&self) -> bool {
         let settings = Settings {
             rows: self.engine.rows().configuration(),
             pinned: self.pinned,
-            window: self.bounds,
+            window: self.position,
+            hotkeys: self.hotkeys.clone(),
+            switch_stop: self.switch_stop,
         };
         if let Err(error) = settings.save() {
             eprintln!("Could not save F-7WHISPER settings: {error}");
@@ -299,12 +316,39 @@ impl Host {
         true
     }
 
+    fn cancel_pick(&mut self) {
+        if self.picker.take().is_some() {
+            let _ = self.window.set_always_on_top(self.pinned);
+        }
+    }
+
+    fn poll_pick(&mut self, now: Instant) {
+        let Some(picker) = &mut self.picker else { return };
+        if now < picker.due {
+            return;
+        }
+        picker.due = now + PICK;
+        let down = desktop::left_down();
+        let pressed = down && !picker.was_down;
+        picker.was_down = down;
+        if pressed {
+            if let Some(point) = desktop::outside_point().filter(|p| p.valid()) {
+                self.cancel_pick();
+                self.activate();
+                self.emit(json!({ "type": "point", "x": point.x, "y": point.y }));
+            }
+        }
+    }
+
     fn finish(&mut self, capture: bool) {
         if self.closed {
             return;
         }
         self.closed = true;
+        self.cancel_pick();
         self.engine.shutdown();
+        self.paused = true;
+        self.rebind();
         if capture {
             self.capture();
         }
@@ -319,43 +363,32 @@ impl Host {
     fn message(&mut self, message: Message) {
         match message {
             Message::Ready => {
+                self.cancel_pick();
+                self.paused = false;
+                self.rebind();
                 self.ready = true;
                 self.reveal();
                 self.capture();
                 self.refresh_access();
-                self.state();
-                return;
             }
             Message::Activate => {
-                self.reveal();
-                if self.window.is_minimized().unwrap_or(false) {
-                    let _ = self.window.unminimize();
-                }
-                let _ = self.window.show();
-                let _ = self.window.set_focus();
+                self.activate();
                 return;
             }
-            Message::Window { action, edge } => {
+            Message::Publish => {}
+            Message::Window { action } => {
                 match action.as_str() {
                     "minimize" => { let _ = self.window.minimize(); }
-                    "maximize" => {
-                        if self.window.is_maximized().unwrap_or(false) {
-                            let _ = self.window.unmaximize();
-                        } else {
-                            let _ = self.window.maximize();
-                        }
-                    }
                     "close" => self.close(),
                     "drag" => { let _ = self.window.start_dragging(); }
-                    "resize" => window::resize(&self.window, edge.as_deref()),
-                    _ => return,
+                    _ => {}
                 }
-                self.geometry_changed = true;
                 return;
             }
             Message::Pin { on } => {
-                if self.window.set_always_on_top(on).is_ok() {
+                if self.window.set_always_on_top(on || self.picker.is_some()).is_ok() {
                     self.pinned = on;
+                    self.dirty();
                 }
             }
             Message::Toggle { id } => {
@@ -365,67 +398,118 @@ impl Host {
                     self.engine.change(|rows| rows.set_running(Some(&id), !running));
                 }
             }
-            Message::StartAll => {
-                if self.allow_start() {
-                    self.engine.change(|rows| rows.set_running(None, true));
-                }
-            }
-            Message::StopAll => self.engine.change(|rows| rows.set_running(None, false)),
-            Message::Add { key, interval_ms } => {
-                if !key.valid() {
+            Message::StartAll => self.all(true),
+            Message::StopAll => self.all(false),
+            Message::PluginHotkey { slot, generation } => {
+                if !self.bindings.accepts_plugin(slot, generation) {
                     return;
                 }
-                self.engine.change(|rows| rows.add(key, interval_ms));
+                self.all(slot == 0);
             }
-            Message::Edit { id, key, interval_ms } => {
-                if key.as_ref().is_some_and(|k| !k.valid()) || (key.is_none() && interval_ms.is_none()) {
+            #[cfg(windows)]
+            Message::NativeHotkey { slot, signature } => {
+                if !self.bindings.accepts_native(slot, signature) {
                     return;
                 }
-                self.engine.change(|rows| rows.edit(&id, key, interval_ms));
+                self.all(slot == 0);
             }
-            Message::Remove { id } => self.engine.change(|rows| rows.remove(&id)),
+            Message::Add { input } => {
+                let Some(input) = Input::from_page(&input) else { return };
+                self.engine.change(|rows| rows.add(input));
+                self.dirty();
+            }
+            Message::Edit { id, input } => {
+                let Some(input) = Input::from_page(&input) else { return };
+                self.engine.change(|rows| rows.edit(&id, input));
+                self.dirty();
+            }
+            Message::Remove { id } => {
+                self.engine.change(|rows| rows.remove(&id));
+                self.dirty();
+            }
+            Message::Settings { hotkeys, switch_stop } => {
+                self.hotkeys = hotkeys.normalized();
+                self.switch_stop = switch_stop;
+                self.engine.change(|rows| rows.set_switch_stop(switch_stop));
+                self.rebind();
+                self.capture();
+                self.save_at = (!self.save()).then(|| Instant::now() + SAVE);
+            }
+            Message::PauseHotkeys { on } => {
+                self.paused = on;
+                self.rebind();
+                if on {
+                    return;
+                }
+            }
+            Message::ListApps => {
+                let mut names = BTreeMap::new();
+                for name in desktop::apps() {
+                    if let Some(name) = settings::app_name(&name) {
+                        names.entry(name.to_lowercase()).or_insert(name);
+                    }
+                }
+                self.emit(json!({ "type": "apps", "apps": names.into_values().collect::<Vec<_>>() }));
+                return;
+            }
+            Message::PickPoint => {
+                let was_down = desktop::left_down();
+                let _ = self.window.set_always_on_top(true);
+                self.picker = Some(Picker { was_down, due: Instant::now() });
+                return;
+            }
+            Message::PickCancel => {
+                self.cancel_pick();
+                return;
+            }
+            Message::Fit { height } => {
+                self.height = height.max(1);
+                self.refit = true;
+                return;
+            }
             Message::OpenAccessSettings => {
                 keys::open_settings();
                 return;
             }
         }
-        self.dirty();
         self.state();
     }
 
     fn tick(&mut self) {
         let now = Instant::now();
+        if self.refit && !self.window.is_minimized().unwrap_or(true) {
+            self.refit = false;
+            window::fit(&self.window, self.height);
+            self.geometry_changed = true;
+        }
         if self.show_at.is_some_and(|t| t <= now) {
             self.reveal();
         }
-        let mut state_changed = false;
         if self.geometry_changed {
             self.geometry_changed = false;
-            state_changed = self.capture();
+            self.capture();
         }
+        self.poll_pick(now);
         if self.access_at.is_some_and(|t| t <= now) {
             self.access_at = Some(now + ACCESS);
-            state_changed |= self.refresh_access();
-        }
-        if state_changed {
-            self.state();
+            if self.refresh_access() {
+                self.state();
+            }
         }
         if self.counts_at.is_some_and(|t| t <= now) {
             self.counts_at = Some(now + COUNTS);
             let counts = self.engine.rows().counts();
             if !counts.is_empty() {
-                let _ = self.window.emit_to("main", "host", json!({
-                    "type": "counts", "counts": counts
-                }));
+                self.emit(json!({ "type": "counts", "counts": counts }));
             }
         }
         if self.save_at.is_some_and(|t| t <= now) {
-            self.save_at = if self.save() { None } else { Some(now + Duration::from_secs(1)) };
+            self.save_at = (!self.save()).then(|| now + Duration::from_secs(1));
         }
-        self.alarm.arm(
-            [self.show_at, self.counts_at, self.save_at, self.access_at]
-                .into_iter().flatten().min()
-        );
+        self.alarm.arm([
+            self.show_at, self.counts_at, self.save_at, self.access_at,
+            self.picker.as_ref().map(|p| p.due),
+        ].into_iter().flatten().min());
     }
 
     fn dispatch(&mut self, receiver: &Receiver<Message>) {
@@ -443,13 +527,13 @@ fn main() {
     #[cfg(windows)]
     std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF0A0A0A");
 
-    let (sender, receiver) = mpsc::channel();
+    let (messages, receiver) = mpsc::channel();
     let (wake, wakeups) = mpsc::channel::<()>();
     let app = tauri::Builder::default()
+        .manage(Inbox { messages, wake })
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            enqueue(app, Message::Activate);
+            app.state::<Inbox>().post(Message::Activate);
         }))
-        .manage(Inbox { messages: sender, wake })
         .invoke_handler(tauri::generate_handler![page_message])
         .build(tauri::generate_context!())
         .expect("could not initialize F-7WHISPER");
@@ -477,8 +561,11 @@ fn main() {
             RunEvent::Ready | RunEvent::MainEventsCleared => host.dispatch(&receiver),
             RunEvent::WindowEvent { label, event, .. } if label == "main" => match event {
                 WindowEvent::Focused(focused) => host.engine.focus(focused),
-                WindowEvent::Moved(_) | WindowEvent::Resized(_) |
-                WindowEvent::ScaleFactorChanged { .. } => host.geometry_changed = true,
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => host.geometry_changed = true,
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    host.refit = true;
+                    host.geometry_changed = true;
+                }
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     host.close();

@@ -1,79 +1,116 @@
-use crate::settings::Bounds;
-use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow};
+use crate::settings::Position;
+use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
-pub fn normal_bounds(window: &WebviewWindow) -> Option<Bounds> {
-    let position = window.outer_position().ok()?;
-    let size = window.outer_size().ok()?;
-    if size.width == 0 || size.height == 0 {
-        return None;
-    }
-    Some(Bounds {
-        x: position.x,
-        y: position.y,
-        width: size.width.try_into().ok()?,
-        height: size.height.try_into().ok()?,
-        maximized: false,
-    })
+pub fn initial_height(rows: usize) -> i64 {
+    let body = if rows == 0 { 96 } else { (rows as i64).saturating_mul(48) };
+    160i64.saturating_add(body)
 }
 
-pub fn restore(window: &WebviewWindow, saved: Bounds) -> Option<Bounds> {
-    if saved.width <= 0 || saved.height <= 0 {
+pub fn position(window: &WebviewWindow) -> Option<Position> {
+    if window.is_minimized().ok()? {
         return None;
     }
-    let right = i64::from(saved.x.checked_add(saved.width)?);
-    let bottom = i64::from(saved.y.checked_add(saved.height)?);
-    let monitors = window.available_monitors().ok()?;
-    let (area, monitor) = monitors.iter().map(|monitor| {
-        let work = monitor.work_area();
-        let x = i64::from(work.position.x);
-        let y = i64::from(work.position.y);
-        let width = right.min(x + i64::from(work.size.width)) - x.max(i64::from(saved.x));
-        let height = bottom.min(y + i64::from(work.size.height)) - y.max(i64::from(saved.y));
-        (width.max(0) * height.max(0), monitor)
-    }).max_by_key(|(area, _)| *area)?;
-    if area == 0 {
-        return None;
-    }
-
-    let position = PhysicalPosition::new(saved.x, saved.y);
-    window.set_position(position).ok()?;
-    let outer = window.outer_size().ok()?;
-    let inner = window.inner_size().ok()?;
-    let scale = monitor.scale_factor();
-    // Settings contain outer pixels. Tauri set_size takes client dimensions.
-    let width = (saved.width as u32)
-        .saturating_sub(outer.width.saturating_sub(inner.width))
-        .max((560.0 * scale).round() as u32);
-    let height = (saved.height as u32)
-        .saturating_sub(outer.height.saturating_sub(inner.height))
-        .max((260.0 * scale).round() as u32);
-    window.set_size(PhysicalSize::new(width, height)).ok()?;
-    window.set_position(position).ok()?;
-    Some(saved)
+    let p = window.outer_position().ok()?;
+    Some(Position { x: p.x, y: p.y })
 }
 
-pub fn resize(window: &WebviewWindow, edge: Option<&str>) {
+fn contains(monitor: &Monitor, p: Position) -> bool {
+    let origin = monitor.position();
+    let size = monitor.size();
+    let dx = i64::from(p.x) - i64::from(origin.x);
+    let dy = i64::from(p.y) - i64::from(origin.y);
+    (0..i64::from(size.width)).contains(&dx) && (0..i64::from(size.height)).contains(&dy)
+}
+
+fn move_to(window: &WebviewWindow, p: PhysicalPosition<i32>, monitor: &Monitor) {
+    #[cfg(target_os = "macos")]
+    {
+        // Tao converts a physical position using the window's current scale.
+        // For a cross-display restore, convert using the destination scale.
+        let _ = window.set_position(p.to_logical::<f64>(monitor.scale_factor()));
+    }
     #[cfg(windows)]
     {
-        if window.is_maximized().unwrap_or(true) {
+        let _ = monitor;
+        let _ = window.set_position(p);
+    }
+}
+
+pub fn initialize(window: &WebviewWindow, saved: Option<Position>, height: i64) {
+    frame(window);
+    if let Some(p) = saved {
+        let monitor = window.available_monitors().ok()
+            .and_then(|list| list.into_iter().find(|m| contains(m, p)));
+        if let Some(monitor) = monitor {
+            move_to(window, PhysicalPosition::new(p.x, p.y), &monitor);
+            fit_on(window, &monitor, p, height);
             return;
         }
-        let direction = match edge {
-            Some("n") => "North",
-            Some("s") => "South",
-            Some("e") => "East",
-            Some("w") => "West",
-            Some("ne") => "NorthEast",
-            Some("nw") => "NorthWest",
-            Some("se") => "SouthEast",
-            Some("sw") => "SouthWest",
-            _ => return,
-        };
-        // Tauri exposes this runtime enum through the method's argument type.
-        if let Ok(direction) = serde_json::from_value(serde_json::Value::from(direction)) {
-            let _ = window.as_ref().window().start_resize_dragging(direction);
-        }
     }
-    #[cfg(target_os = "macos")]
-    let _ = (window, edge);
+    fit(window, height);
+    let _ = window.center();
+    fit(window, height);
 }
+
+pub fn fit(window: &WebviewWindow, height: i64) {
+    let Some(p) = position(window) else { return };
+    let monitor = window.current_monitor().ok().flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        fit_on(window, &monitor, p, height);
+    }
+}
+
+fn fit_on(window: &WebviewWindow, monitor: &Monitor, p: Position, height: i64) {
+    let (Ok(outer), Ok(inner)) = (window.outer_size(), window.inner_size()) else { return };
+    let work = monitor.work_area();
+    if work.size.width == 0 || work.size.height == 0 {
+        return;
+    }
+
+    let frame_w = outer.width.saturating_sub(inner.width);
+    let frame_h = outer.height.saturating_sub(inner.height);
+    let scale = monitor.scale_factor();
+    let width = ((720.0 * scale).round() as u32)
+        .min(work.size.width.saturating_sub(frame_w)).max(1);
+    let height = ((height.max(1) as f64 * scale).round() as u32)
+        .min(work.size.height.saturating_sub(frame_h)).max(1);
+    let wanted = PhysicalSize::new(width, height);
+    if inner != wanted && window.set_size(wanted).is_err() {
+        return;
+    }
+
+    fn axis(old: i32, origin: i32, available: u32, used: u32) -> i32 {
+        let lo = i64::from(origin);
+        let hi = lo + i64::from(available.saturating_sub(used));
+        i64::from(old).clamp(lo, hi).min(i64::from(i32::MAX)) as i32
+    }
+
+    let target = PhysicalPosition::new(
+        axis(p.x, work.position.x, work.size.width, width.saturating_add(frame_w)),
+        axis(p.y, work.position.y, work.size.height, height.saturating_add(frame_h)),
+    );
+    if window.outer_position().ok() != Some(target) {
+        move_to(window, target, monitor);
+    }
+}
+
+/// Windows 11 frame: 8 px rounded corners (the system maximum) and a 1 px #2e2e2e border.
+#[cfg(windows)]
+pub fn frame(window: &WebviewWindow) {
+    use windows::Win32::{
+        Foundation::HWND,
+        Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
+    };
+    let Ok(handle) = window.hwnd() else { return };
+    let hwnd = HWND(handle.0.cast());
+    let corner = DWMWCP_ROUND;
+    let border: u32 = 0x002E_2E2E; // COLORREF 0x00BBGGRR
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, std::ptr::from_ref(&corner).cast(), size_of_val(&corner) as u32);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&border as *const u32).cast(), size_of::<u32>() as u32);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn frame(_window: &WebviewWindow) {}

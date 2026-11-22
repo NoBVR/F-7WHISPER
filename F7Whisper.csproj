@@ -5,6 +5,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>F-7WHISPER</AssemblyName>
     <RootNamespace>F7Whisper</RootNamespace>
+    <Version>1.0.0</Version>
     <Nullable>enable</Nullable>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
