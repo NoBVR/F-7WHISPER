@@ -17,6 +17,8 @@ enum Role {
 enum Registration {
     Plugin(Shortcut),
     Mouse(usize),
+    #[cfg(target_os = "macos")]
+    Combo(u64),
     #[cfg(windows)]
     Native { id: usize, signature: u32 },
 }
@@ -49,7 +51,7 @@ pub struct Bindings {
 fn plugin_shortcut(h: &Hotkey) -> Option<Shortcut> {
     // Windows registers raw virtual keys through the native path. On macOS
     // these codes have no physical key mapping.
-    if h.key.code.starts_with("Vk") {
+    if h.with.is_some() || h.key.code.starts_with("Vk") {
         return None;
     }
 
@@ -106,6 +108,7 @@ impl Bindings {
         app: &AppHandle,
         keys: &Hotkeys,
         triggers: &[Hotkey],
+        two_key: bool,
         paused: bool,
         access_ok: bool,
         refresh_plugin: bool,
@@ -120,9 +123,13 @@ impl Bindings {
                 }
             }
         }
-        if !access_ok {
-            wanted.retain(|(_, key)| mouse::slot(key).is_none());
-        }
+        wanted.retain(|(_, key)| {
+            if key.with.is_some() {
+                cfg!(target_os = "macos") && two_key && access_ok
+            } else {
+                access_ok || mouse::slot(key).is_none()
+            }
+        });
 
         let mut released = Vec::new();
         let mut kept = Vec::new();
@@ -133,8 +140,10 @@ impl Bindings {
             if let Some((_, key)) = same {
                 entry.key = (*key).clone();
                 let keep = match entry.registration {
-                    // A lost worker took all its native mouse registrations with it.
+                    // A lost worker took its registrations with it.
                     Registration::Mouse(_) => self.mouse.is_some(),
+                    #[cfg(target_os = "macos")]
+                    Registration::Combo(_) => self.mouse.is_some(),
                     Registration::Plugin(shortcut) if refresh_plugin => {
                         // Preserve the token and down state across a successful
                         // refresh so a physically held trigger keeps its release.
@@ -164,7 +173,7 @@ impl Bindings {
         }
         self.entries = kept;
 
-        if wanted.iter().any(|(_, key)| mouse::slot(key).is_some()) {
+        if wanted.iter().any(|(_, key)| key.with.is_some() || mouse::slot(key).is_some()) {
             if self.mouse.is_none() {
                 let generation = self.next_token();
                 self.mouse = mouse::Listener::start(self.inbox.clone(), generation);
@@ -185,7 +194,15 @@ impl Bindings {
 
     fn register(&mut self, app: &AppHandle, role: Role, key: &Hotkey) -> Option<Entry> {
         let token = self.next_token();
-        let registration = if let Some(slot) = mouse::slot(key) {
+        let registration = if key.with.is_some() {
+            #[cfg(target_os = "macos")]
+            {
+                self.mouse.as_ref()?.add_combo(key, token)?;
+                Registration::Combo(token)
+            }
+            #[cfg(not(target_os = "macos"))]
+            return None;
+        } else if let Some(slot) = mouse::slot(key) {
             self.mouse.as_ref()?.set(slot, token);
             Registration::Mouse(slot)
         } else if let Some(shortcut) = plugin_shortcut(key).filter(|_| self.plugin) {
@@ -223,6 +240,13 @@ impl Bindings {
             Registration::Mouse(slot) => {
                 if let Some(mouse) = &self.mouse {
                     mouse.set(slot, 0);
+                }
+                true
+            }
+            #[cfg(target_os = "macos")]
+            Registration::Combo(token) => {
+                if let Some(mouse) = &self.mouse {
+                    mouse.remove_combo(token);
                 }
                 true
             }

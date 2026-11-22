@@ -318,6 +318,10 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
       <span id="switchLabel">Stop when switching apps</span>
       <button class="switch" id="switchStop" type="button" role="switch" aria-checked="true" aria-labelledby="switchLabel"></button>
     </div>
+    <div class="switchrow" id="twoKeyRow" hidden>
+      <span id="twoKeyLabel">Two-key activate keys</span>
+      <button class="switch" id="twoKey" type="button" role="switch" aria-checked="true" aria-labelledby="twoKeyLabel"></button>
+    </div>
     <div class="actions">
       <button class="btn" type="button" data-close>Cancel</button>
       <button class="btn primary" type="submit" id="setSave">Save</button>
@@ -344,15 +348,16 @@ const mock = (() => {
   const F6 = { label: "F6", code: "F6", vk: 117, ctrl: false, alt: false, shift: false, meta: false };
   const F7 = { label: "F7", code: "F7", vk: 118, ctrl: false, alt: false, shift: false, meta: false };
   const G = { label: "G", code: "KeyG", vk: 71, ctrl: false, alt: false, shift: false, meta: false };
+  const QE = { label: "Q + E", code: "KeyQ", vk: 81, ctrl: false, alt: false, shift: false, meta: false, with: { label: "E", code: "KeyE", vk: 69 } };
   const rows = [
     { id: "a", kind: "key", label: "F", code: "KeyF", vk: 70, app: null, trigger: { hotkey: G, mode: "toggle" }, intervalMs: 250, running: true, count: 1284 },
-    { id: "b", kind: "key", label: "Space", code: "Space", vk: 32, app: null, trigger: null, intervalMs: 1000, running: false, count: 0 },
+    { id: "b", kind: "key", label: "Space", code: "Space", vk: 32, app: null, trigger: { hotkey: QE, mode: "hold" }, intervalMs: 1000, running: false, count: 0 },
     { id: "e", kind: "click", button: "left", at: null, app: "RobloxPlayerBeta.exe", trigger: { hotkey: { ...G, label: "X", code: "KeyX", vk: 88 }, mode: "hold" }, intervalMs: 100, running: true, count: 5120 },
   ];
-  const st = { pinned: false, hotkeys: { start: F6, stop: F7 }, switchStop: true };
+  const st = { pinned: false, hotkeys: { start: F6, stop: F7 }, switchStop: true, twoKey: true };
   const push = () => setTimeout(() => receive({
     type: "state", version: "1.0.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
-    rows: rows.map((r) => ({ ...r, triggerOk: !!r.trigger })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop,
+    rows: rows.map((r) => ({ ...r, triggerOk: !!r.trigger && (st.twoKey || !r.trigger.hotkey.with) })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop, twoKey: st.twoKey,
   }));
   const find = (id) => rows.find((r) => r.id === id);
   const fromInput = (i) => (i.kind === "click"
@@ -373,7 +378,7 @@ const mock = (() => {
       else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), ...fromInput(m.input), app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs, running: false, count: 0 });
       else if (m.type === "edit" && r) Object.assign(r, fromInput(m.input), { app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs });
       else if (m.type === "remove" && r) rows.splice(rows.indexOf(r), 1);
-      else if (m.type === "settings") Object.assign(st, { hotkeys: m.hotkeys, switchStop: m.switchStop });
+      else if (m.type === "settings") Object.assign(st, { hotkeys: m.hotkeys, switchStop: m.switchStop }, typeof m.twoKey === "boolean" ? { twoKey: m.twoKey } : {});
       else if (m.type === "listApps") { setTimeout(() => receive({ type: "apps", apps: ["Discord.exe", "javaw.exe", "notepad.exe", "RobloxPlayerBeta.exe"] }), 60); return; }
       else if (m.type === "pickPoint") { pickTimer = setTimeout(() => receive({ type: "point", x: 812, y: 440 }), 1500); return; }
       else if (m.type === "pickCancel") { clearTimeout(pickTimer); return; }
@@ -405,7 +410,12 @@ function rowTitle(r) {
   if (r.app) t += ` in ${r.app}`;
   return t;
 }
-const sameHotkey = (a, b) => !!a && !!b && a.code === b.code && ["ctrl", "alt", "shift", "meta"].every((m) => !!a[m] === !!b[m]);
+// A two-key hotkey ("with" = second key) is the same binding in either order: F7 + G = G + F7.
+const keysOf = (h) => [h.code, h.with ? h.with.code : ""].sort().join("\n");
+const sameHotkey = (a, b) => !!a && !!b && keysOf(a) === keysOf(b) && ["ctrl", "alt", "shift", "meta"].every((m) => !!a[m] === !!b[m]);
+// The host sends twoKey only when it supports two-key activate keys.
+const twoKeyHost = () => typeof state.twoKey === "boolean";
+const twoKeyOn = () => twoKeyHost() && state.twoKey;
 
 const ICON_PLAY = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.75v8.5L10.25 6z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
 const ICON_STOP = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" fill="currentColor"/></svg>';
@@ -671,14 +681,23 @@ function keyLabel(e) {
 }
 // Mouse side buttons (event.button 3 and 4) as hotkeys; vk 5 / 6 are Windows' VK_XBUTTON1 / VK_XBUTTON2.
 const MOUSE = { 3: { code: "MouseBack", vk: 5, label: "Mouse 4" }, 4: { code: "MouseForward", vk: 6, label: "Mouse 5" } };   // gamer names for back / forward
+function hotkeyLabel(h, keys) {
+  const order = ["ctrl", "alt", "shift", "meta"].filter((m) => h[m]);
+  return isMac()
+    ? order.map((m) => ({ ctrl: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" })[m]).join("") + keys.join(" + ")
+    : [...order.map((m) => ({ ctrl: "Ctrl", alt: "Alt", shift: "Shift", meta: "Win" })[m]), ...keys].join(" + ");
+}
 function hotkeyFrom(e) {
   const m = e.type === "mousedown" ? MOUSE[e.button] : null;
   const h = { code: m ? m.code : codeOf(e), vk: m ? m.vk : e.keyCode, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey };
-  const order = ["ctrl", "alt", "shift", "meta"].filter((m) => h[m]);
-  const key = m ? m.label : keyLabel(e);
-  h.label = isMac()
-    ? order.map((m) => ({ ctrl: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" })[m]).join("") + key
-    : [...order.map((m) => ({ ctrl: "Ctrl", alt: "Alt", shift: "Shift", meta: "Win" })[m]), key].join(" + ");
+  h.label = hotkeyLabel(h, [m ? m.label : keyLabel(e)]);
+  return h;
+}
+// First key (pending = { hotkey, name }) plus a second key; the modifiers are the ones held when the second key went down.
+function comboFrom(pending, e) {
+  const first = pending.hotkey;
+  const h = { code: first.code, vk: first.vk, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey, with: { label: keyLabel(e), code: codeOf(e), vk: e.keyCode } };
+  h.label = hotkeyLabel(h, [pending.name, h.with.label]);
   return h;
 }
 
@@ -712,11 +731,11 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("mousedown", (e) => { if (e.target === s) (s.id === "addScrim" ? closeAdd() : closeSettings()); }));
 
 /* ── Add / Edit ── */
-const add = { editing: null, kind: "key", key: null, button: "left", where: "cursor", at: null, picking: false, unit: "ms", app: null, listening: false, trigger: null, mode: "hold", trigListening: false };
+const add = { editing: null, kind: "key", key: null, button: "left", where: "cursor", at: null, picking: false, unit: "ms", app: null, listening: false, trigger: null, mode: "hold", trigListening: false, trigPending: null };
 
 // An activate key must not be a Start all / Stop all hotkey or a key that a row presses (the press would set it off),
-// and a row must not press a key that activates a row.
-const plain = (h) => !!h && !h.ctrl && !h.alt && !h.shift && !h.meta;
+// and a row must not press a key that activates a row. Two-key activate keys ignore F-7's own presses, so they're exempt.
+const plain = (h) => !!h && !h.with && !h.ctrl && !h.alt && !h.shift && !h.meta;
 function conflicts() {
   const hk = state.hotkeys || {};
   const others = state.rows.filter((r) => !add.editing || r.id !== add.editing.id);
@@ -738,6 +757,7 @@ function startTrigListen() {
 function stopTrigListen() {
   if (!add.trigListening) return;
   add.trigListening = false;
+  add.trigPending = null;
   send({ type: "pauseHotkeys", on: false });
   showAdd();
 }
@@ -778,7 +798,8 @@ function showAdd() {
   setPressed("mode", add.mode);
   const tc = $("trigCapture");
   tc.classList.toggle("listening", add.trigListening);
-  tc.innerHTML = add.trigListening ? '<span class="hint">Press a key</span>' : add.trigger ? esc(add.trigger.label) : '<span class="hint">None</span>';
+  tc.innerHTML = add.trigPending ? `${esc(add.trigPending.hotkey.label)}<span class="hint">+ …</span>`
+    : add.trigListening ? '<span class="hint">Press a key</span>' : add.trigger ? esc(add.trigger.label) : '<span class="hint">None</span>';
   const bad = conflicts();
   tc.classList.toggle("bad", bad.trigger && !add.trigListening);
   cap.classList.toggle("bad", bad.key && !add.listening);
@@ -843,16 +864,40 @@ $("addDialog").addEventListener("click", (e) => {
   if (b.id === "appPick") $("appMenu").hidden ? openAppMenu() : closeAppMenu();
 });
 $("capture").addEventListener("blur", () => { if (add.listening) { add.listening = false; showAdd(); } });
-$("trigCapture").addEventListener("blur", stopTrigListen);
+// Two-key capture: the first key waits for a second one. Letting go of it (or of a modifier: WebKit drops some
+// key-ups while ⌘ is held), Tab, or leaving the box keeps the first key on its own.
+function keepPending() {
+  if (add.trigPending) add.trigger = add.trigPending.hotkey;
+  stopTrigListen();
+}
+$("trigCapture").addEventListener("blur", keepPending);
+window.addEventListener("blur", () => { if (add.trigPending) keepPending(); });
+$("addDialog").addEventListener("keyup", (e) => {
+  if (!add.trigPending) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (codeOf(e) === add.trigPending.hotkey.code || MOD_CODE.test(e.code)) keepPending();
+});
 $("addDialog").addEventListener("keydown", (e) => {
   if (add.trigListening) {
-    if (e.key === "Tab") { stopTrigListen(); trapTab($("addDialog"), e); return; }
+    if (e.key === "Tab") { keepPending(); trapTab($("addDialog"), e); return; }
     e.preventDefault();
     e.stopPropagation();
     if (e.key === "Escape") { stopTrigListen(); return; }
     if (!codeOf(e) || MOD_CODE.test(e.code)) return;    // wait for the key that goes with the modifiers
-    add.trigger = hotkeyFrom(e);
-    stopTrigListen();
+    if (e.repeat) return;
+    const pending = add.trigPending;
+    if (pending) {
+      if (codeOf(e) === pending.hotkey.code) return;
+      add.trigger = comboFrom(pending, e);
+      stopTrigListen();
+    } else if (twoKeyOn()) {
+      add.trigPending = { hotkey: hotkeyFrom(e), name: keyLabel(e) };
+      showAdd();
+    } else {
+      add.trigger = hotkeyFrom(e);
+      stopTrigListen();
+    }
     return;
   }
   if (add.listening) {
@@ -932,6 +977,8 @@ function showSettings() {
     box.innerHTML = set.listening === which ? '<span class="hint">Press a key</span>' : hk ? esc(hk.label) : '<span class="hint">None</span>';
   }
   $("switchStop").setAttribute("aria-checked", String(set.draft.switchStop));
+  $("twoKeyRow").hidden = !twoKeyHost();
+  $("twoKey").setAttribute("aria-checked", String(set.draft.twoKey));
   $("setSave").disabled = sameHotkey(set.draft.start, set.draft.stop);
 }
 function listenHotkey(which) {
@@ -948,7 +995,7 @@ function stopListening() {
 }
 function openSettings() {
   const hk = state.hotkeys || {};
-  set.draft = { start: hk.start || null, stop: hk.stop || null, switchStop: state.switchStop !== false };
+  set.draft = { start: hk.start || null, stop: hk.stop || null, switchStop: state.switchStop !== false, twoKey: state.twoKey !== false };
   set.listening = null;
   showSettings();
   showScrim("setScrim", $("hkStart"));
@@ -963,6 +1010,7 @@ $("setDialog").addEventListener("click", (e) => {
   if (b.dataset.hk) listenHotkey(b.dataset.hk);
   if (b.dataset.hkClear) { stopListening(); set.draft[b.dataset.hkClear] = null; showSettings(); }
   if (b.id === "switchStop") { set.draft.switchStop = !set.draft.switchStop; showSettings(); }
+  if (b.id === "twoKey") { set.draft.twoKey = !set.draft.twoKey; showSettings(); }
 });
 document.querySelectorAll("[data-hk]").forEach((b) => b.addEventListener("blur", stopListening));
 $("setDialog").addEventListener("keydown", (e) => {
@@ -982,7 +1030,7 @@ $("setDialog").addEventListener("keydown", (e) => {
 $("setDialog").addEventListener("submit", (e) => {
   e.preventDefault();
   if (sameHotkey(set.draft.start, set.draft.stop)) return;
-  send({ type: "settings", hotkeys: { start: set.draft.start, stop: set.draft.stop }, switchStop: set.draft.switchStop });
+  send({ type: "settings", hotkeys: { start: set.draft.start, stop: set.draft.stop }, switchStop: set.draft.switchStop, ...(twoKeyHost() ? { twoKey: set.draft.twoKey } : {}) });
   closeSettings();
 });
 

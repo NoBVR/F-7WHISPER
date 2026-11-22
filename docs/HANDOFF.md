@@ -1,44 +1,23 @@
 # F-7WHISPER handoff: Windows PC → Mac
 
-Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac can continue locally. `main` was at `ea2f119` when this was written. Source code is authoritative if this file goes stale.
+Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac could continue locally, then updated the same day on the Mac after the two-key change (§0). Source code is authoritative if this file goes stale.
 
 ---
 
-## 0. Start here: what the user asked for last
+## 0. Start here: what changed last (2026-11-22, on the Mac)
 
-The user tested the Mac app (`F-7WHISPER.dmg`) on their real Mac and reported, in their words:
+**Two-key activate keys** were added: a row's Hold or Press key can be two ordinary keys held together (`F7 + G`), with a Settings switch, **Two-key activate keys**, to turn it off. The user asked for this in their words: "Any key + any key", "Add an option to disable it", and a note so the Windows version can be updated to match.
 
-> "Its not registering macos keys and it also needs support for 2 keys so like ctrl + f7 as a hold keybind"
+- **Done:** the shared page (`ui/index.html`) and the Mac host (`src-tauri/`).
+- **Not done: the Windows C# host.** The full contract and the Windows to-do list are in [`docs/TWO-KEY.md`](TWO-KEY.md). Claude on the PC: read it, make the Windows changes, rebuild and reinstall the Windows app (§7).
+- Until then a rebuilt Windows app behaves exactly as before. The page only offers two-key capture when the host sends `twoKey` in `state`, and the C# host doesn't yet.
 
-The Windows session was stopped before investigating, so **nothing has been changed for this yet**.
+### Mac key notes (from the user's first real-Mac test)
 
-### Task A: "not registering macos keys" (unclear, ask first)
-
-Ask the user which of these they mean before changing code:
-
-1. Pressing a key in the Add dialog's **Key** box or **Activate** box does nothing.
-2. The **Start all / Stop all** hotkeys (defaults F6 / F7) don't fire.
-3. A row's **activate key** (Hold or Press) doesn't start the row.
-4. A key row runs (the count goes up) but **other apps don't receive the presses**.
-
-Likely causes to check on the real Mac:
-
-- **Mac F-keys are media keys by default.** On Apple keyboards F1–F12 send brightness, volume, media and similar unless `fn` is held, or *System Settings → Keyboard → Keyboard Shortcuts → Function Keys → "Use F1, F2, etc. keys as standard function keys"* is on. The defaults F6 / F7 may therefore never arrive as F6 / F7.
-- **macOS reserves Control+F1 … F8** for keyboard navigation. For example, Control+F7 toggles how Tab moves focus. These are under *System Settings → Keyboard → Keyboard Shortcuts → Keyboard*. The system may swallow them before the page or the hotkey API sees them. That directly affects the user's example, "ctrl + f7".
-- **Accessibility permission.** Without it, macOS silently drops every posted key and click. Blur rows are also deliberately **paused** while `AXIsProcessTrusted()` is false (`src-tauri/src/engine.rs`, `trusted_cached`). The side-button listener (CGEventTap in `src-tauri/src/mouse_macos.rs`) may also need Input Monitoring. This is not verified.
-- **Ad-hoc signing resets permissions.** The app is ad-hoc signed (`signingIdentity: "-"`), so every rebuild has a new code signature. macOS may then treat it as a new app, and the old Accessibility toggle no longer applies. Remove F-7WHISPER from the Accessibility list, then add it again. With `npx tauri dev`, the permission belongs to the terminal app that launched it (Terminal or iTerm), not to F-7.
-- **Hotkeys whose code is `Vk<n>`** (keys without a DOM `code`) can't be registered on macOS: `plugin_shortcut` in `src-tauri/src/hotkeys.rs` returns `None` for them.
-
-### Task B: two-key combos such as Ctrl+F7 as a Hold activate key
-
-**Most of this already exists. Find what fails on the Mac before building anything new.**
-
-- **UI:** the capture waits for a non-modifier key and records the modifiers with it. `hotkeyFrom(e)` in `ui/index.html` stores `{ code, vk, ctrl, alt, shift, meta, label }`. The Activate capture (`#trigCapture`) and the Settings hotkey capture both skip pure modifier presses (`MOD_CODE` test) and take the next key. Mac labels use ⌃⌥⇧⌘ (for example `⌃F7`); Windows labels use `Ctrl + F7`.
-- **Mac host:** `src-tauri/src/hotkeys.rs` `plugin_shortcut()` builds a `tauri-plugin-global-shortcut` `Shortcut` with `Modifiers::CONTROL/ALT/SHIFT/SUPER`. Hold mode starts the row on `ShortcutState::Pressed` and stops it on `Released`.
-- **Windows host (C#):** `src/MainForm.cs` calls `RegisterHotKey` with MOD flags (`src/Settings.cs` line ~63: Alt=1, Ctrl=2, Shift=4, Win=8). Hold release is detected by polling `GetAsyncKeyState(vk)` every 10 ms.
-- **Settings model** (both hosts): `Hotkey = Key + ctrl/alt/shift/meta` (`src-tauri/src/settings.rs`, `src/Settings.cs`).
-
-So on the Mac, test **Ctrl+F7 in Hold mode** and also **Ctrl+G in Hold mode**. If Ctrl+G works and Ctrl+F7 doesn't, the cause is the macOS reservation or media-key behaviour above, not missing support. If the user means **two ordinary keys** (for example `F7 + G`), that is genuinely new. Confirm it with the user, then change the UI capture, the settings model and both hosts. Any change to the `Hotkey` shape must stay readable by the Windows C# host (old settings files must keep loading).
+- **The user's Mac has the top row in media mode** (`com.apple.keyboard.fnState` unset; built-in Apple keyboard). F6 / F7 only arrive as F6 / F7 while `fn` is held. The user hasn't tested fn+F6 / fn+F7 yet.
+- **macOS may reserve Control+F1 … F8** for keyboard navigation (Control+F7 changes how Tab moves focus). The user's shortcut prefs have no override for those IDs, so they're at the system default; whether that default is on wasn't checked.
+- **Ad-hoc signing:** every rebuild changes the signature, so the Accessibility toggle has to be removed and re-added after replacing the app.
+- **Hotkeys with `Vk<n>` codes** can't be registered on macOS.
 
 ---
 
@@ -51,7 +30,7 @@ So on the Mac, test **Ctrl+F7 in Hold mode** and also **Ctrl+G in Hold mode**. I
 - **Model routing on the PC:**
   - Claude does all front-end work (`ui/index.html`).
   - Backend went to Codex `gpt-6.2-astra` at xhigh: one run at a time, short briefs naming exact files, `--sandbox read-only`, answering with a `git apply` diff.
-  - If Codex isn't set up on the Mac, ask the user before substituting. Last time they chose "Claude writes it now" (Opus subagents).
+  - If Codex isn't set up, ask the user before substituting. On the Mac, `gpt-6.2-astra` needs Codex CLI 0.171 or newer (`npm install -g @openai/codex@latest`); 0.144 rejected it.
 - **Don't drive the user's screen** (computer use, synthetic input) for testing without asking. They often have Roblox or Discord open. Don't run anything that posts real keys or clicks on their Mac without asking: `blur-engine/examples/mac_rate` presses F20 and **left-clicks at the cursor** at 1,000 a second for 3 s.
 - The user also runs **Blur AutoClicker** itself. Its events carry the same tag `0x800DA5A5`, so a listener can't tell the two apart.
 - **After every F-7 change, update both deliverables unasked:**
@@ -118,7 +97,7 @@ Key Mac files in `src-tauri/src/`:
 | `toggle` | `id` |
 | `startAll`, `stopAll` | |
 | `pin` | `on` |
-| `settings` | `hotkeys: {start, stop}`, `switchStop` |
+| `settings` | `hotkeys: {start, stop}`, `switchStop`, `twoKey` (only sent when the host reports it) |
 | `pauseHotkeys` | `on`: true while a capture box is listening, so hotkeys don't fire |
 | `listApps` | |
 | `pickPoint`, `pickCancel` | |
@@ -129,13 +108,13 @@ Key Mac files in `src-tauri/src/`:
 **Input shape:**
 - Key row: `{ kind: "key", key: {label, code, vk}, intervalMs, app, trigger }`
 - Click row: `{ kind: "click", button: "left"|"right"|"middle"|"back"|"forward", at: {x,y}|null, intervalMs, app, trigger }`
-- `trigger`: `null` or `{ hotkey: {label, code, vk, ctrl, alt, shift, meta}, mode: "hold"|"toggle" }`
+- `trigger`: `null` or `{ hotkey: {label, code, vk, ctrl, alt, shift, meta, with?}, mode: "hold"|"toggle" }`. `with: {label, code, vk}` is the second key of a two-key activate key ([`TWO-KEY.md`](TWO-KEY.md)).
 
 **Host → page** (Tauri event `host`):
 
 | Message | Fields |
 |---|---|
-| `state` | rows (each with `running`, `count`), `version`, `hotkeys`, `hotkeyOk: {start, stop}`, `switchStop`, `pinned`, `platform` (`"macos"` on Mac), `accessOk` |
+| `state` | rows (each with `running`, `count`), `version`, `hotkeys`, `hotkeyOk: {start, stop}`, `switchStop`, `twoKey` (hosts that support two-key activate keys), `pinned`, `platform` (`"macos"` on Mac), `accessOk` |
 | `counts` | |
 | `apps` | `apps: string[]` |
 | `point` | `x`, `y` |

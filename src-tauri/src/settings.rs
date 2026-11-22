@@ -15,6 +15,14 @@ pub struct Key {
 }
 
 impl Key {
+    fn same_key(&self, other: &Self) -> bool {
+        if cfg!(windows) { self.vk == other.vk } else { self.code == other.code }
+    }
+
+    fn is_mouse(&self) -> bool {
+        matches!(self.code.as_str(), "MouseBack" | "MouseForward")
+    }
+
     fn valid(&self) -> bool {
         !self.label.is_empty() && !self.code.trim().is_empty() && (1..255).contains(&self.vk)
     }
@@ -78,7 +86,17 @@ impl Trigger {
             Some(value) => value,
         };
         let trigger: Self = serde_json::from_value(value.clone()).ok()?;
-        trigger.hotkey.key.valid().then_some(Some(trigger))
+        let hotkey = &trigger.hotkey;
+        if let Some(with) = &hotkey.with {
+            if !with.valid() || with.is_mouse() || hotkey.key.is_mouse() || with.same_key(&hotkey.key)
+                || matches!(with.code.as_str(),
+                    "ShiftLeft" | "ShiftRight" | "ControlLeft" | "ControlRight"
+                    | "AltLeft" | "AltRight" | "MetaLeft" | "MetaRight")
+            {
+                return None;
+            }
+        }
+        hotkey.key.valid().then_some(Some(trigger))
     }
 }
 
@@ -149,6 +167,8 @@ pub struct RowSpec {
 pub struct Hotkey {
     #[serde(flatten)]
     pub key: Key,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<Key>,
     #[serde(default)]
     pub ctrl: bool,
     #[serde(default)]
@@ -163,6 +183,7 @@ impl Hotkey {
     fn function(code: &str, vk: u16) -> Self {
         Self {
             key: Key { label: code.into(), code: code.into(), vk },
+            with: None,
             ctrl: false,
             alt: false,
             shift: false,
@@ -171,12 +192,13 @@ impl Hotkey {
     }
 
     pub fn same_binding(&self, other: &Self) -> bool {
-        let same_key = if cfg!(windows) {
-            self.key.vk == other.key.vk
-        } else {
-            self.key.code == other.key.code
+        let same_keys = match (&self.with, &other.with) {
+            (None, None) => self.key.same_key(&other.key),
+            (Some(a), Some(b)) => (self.key.same_key(&other.key) && a.same_key(b))
+                || (self.key.same_key(b) && a.same_key(&other.key)),
+            _ => false,
         };
-        same_key && self.ctrl == other.ctrl && self.alt == other.alt
+        same_keys && self.ctrl == other.ctrl && self.alt == other.alt
             && self.shift == other.shift && self.meta == other.meta
     }
 }
@@ -200,6 +222,9 @@ impl Hotkeys {
     pub fn normalized(mut self) -> Self {
         self.start = self.start.filter(|h| h.key.valid());
         self.stop = self.stop.filter(|h| h.key.valid());
+        for key in self.start.iter_mut().chain(&mut self.stop) {
+            key.with = None;
+        }
         if let (Some(start), Some(stop)) = (&self.start, &self.stop) {
             if start.same_binding(stop) {
                 self.start = None;
@@ -237,6 +262,7 @@ pub struct Settings {
     pub window: Option<Position>,
     pub hotkeys: Hotkeys,
     pub switch_stop: bool,
+    pub two_key: bool,
 }
 
 impl Default for Settings {
@@ -247,6 +273,7 @@ impl Default for Settings {
             window: None,
             hotkeys: Hotkeys::default(),
             switch_stop: true,
+            two_key: true,
         }
     }
 }
@@ -280,6 +307,7 @@ impl Settings {
             window: doc.get("window").and_then(|v| serde_json::from_value(v.clone()).ok()),
             hotkeys: Hotkeys::load(doc.get("hotkeys")),
             switch_stop: doc.get("switchStop").and_then(Value::as_bool).unwrap_or(true),
+            two_key: doc.get("twoKey").and_then(Value::as_bool).unwrap_or(true),
         })
     }
 

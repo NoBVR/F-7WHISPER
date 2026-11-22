@@ -49,6 +49,8 @@ enum Message {
         hotkeys: Hotkeys,
         #[serde(rename = "switchStop")]
         switch_stop: bool,
+        #[serde(default, rename = "twoKey")]
+        two_key: Option<bool>,
     },
     PauseHotkeys { on: bool },
     ListApps,
@@ -154,6 +156,7 @@ struct Host {
     bindings: Bindings,
     paused: bool,
     switch_stop: bool,
+    two_key: bool,
     picker: Option<Picker>,
     access_ok: bool,
     prompted: bool,
@@ -183,7 +186,7 @@ impl Host {
         let access_ok = keys::trusted();
         let mut bindings = Bindings::new(&window);
         let triggers = engine.rows().trigger_keys();
-        bindings.apply(app, &settings.hotkeys, &triggers, false, access_ok, false);
+        bindings.apply(app, &settings.hotkeys, &triggers, settings.two_key, false, access_ok, false);
         let now = Instant::now();
         Self {
             window,
@@ -199,6 +202,7 @@ impl Host {
             bindings,
             paused: false,
             switch_stop: settings.switch_stop,
+            two_key: settings.two_key,
             picker: None,
             access_ok,
             prompted: false,
@@ -281,7 +285,8 @@ impl Host {
             "rows": rows,
             "hotkeys": self.hotkeys,
             "hotkeyOk": { "start": start_ok, "stop": stop_ok },
-            "switchStop": self.switch_stop
+            "switchStop": self.switch_stop,
+            "twoKey": self.two_key
         }));
     }
 
@@ -318,7 +323,7 @@ impl Host {
         let triggers = self.engine.rows().trigger_keys();
         let released = self.bindings.apply(
             self.window.app_handle(), &self.hotkeys, &triggers,
-            self.paused, self.access_ok, refresh_plugin,
+            self.two_key, self.paused, self.access_ok, refresh_plugin,
         );
         for key in &released {
             self.engine.change(|rows| rows.trigger_up(key));
@@ -351,6 +356,7 @@ impl Host {
             window: self.position,
             hotkeys: self.hotkeys.clone(),
             switch_stop: self.switch_stop,
+            two_key: self.two_key,
         };
         if let Err(error) = settings.save() {
             eprintln!("Could not save F-7WHISPER settings: {error}");
@@ -486,9 +492,10 @@ impl Host {
                 self.rebind(false);
                 self.dirty();
             }
-            Message::Settings { hotkeys, switch_stop } => {
+            Message::Settings { hotkeys, switch_stop, two_key } => {
                 self.hotkeys = hotkeys.normalized();
                 self.switch_stop = switch_stop;
+                self.two_key = two_key.unwrap_or(self.two_key);
                 self.engine.change(|rows| rows.set_switch_stop(switch_stop));
                 self.refresh_access();
                 self.rebind(true);

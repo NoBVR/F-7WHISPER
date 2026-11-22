@@ -368,12 +368,21 @@ impl Rows {
 
     pub fn edit(&mut self, id: &str, input: Input) {
         let Some(index) = self.rows.iter().position(|r| r.spec.id == id) else { return };
-        self.release(Some(id));
+        let old = self.rows[index].spec.input.trigger.as_ref().filter(|t| t.mode == Mode::Hold);
+        let keeps_hold = old.is_none_or(|old| input.trigger.as_ref().is_some_and(|new| {
+            new.mode == Mode::Hold && new.hotkey.same_binding(&old.hotkey)
+        }));
+        if keeps_hold {
+            // A running row keeps running: process() starts a new Blur run with the
+            // new values once the row may press.
+            self.release(Some(id));
+            #[cfg(any(windows, target_os = "macos"))]
+            self.rows[index].stop_blur();
+        } else {
+            // The old Hold key's release would no longer reach this row.
+            self.set_running(Some(id), false);
+        }
         let row = &mut self.rows[index];
-        // A running row keeps running: process() starts a new Blur run with the
-        // new values once the row may press.
-        #[cfg(any(windows, target_os = "macos"))]
-        row.stop_blur();
         row.configure(input);
         row.due = Instant::now();
     }
