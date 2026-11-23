@@ -134,10 +134,17 @@ internal sealed class KeyEngine : IDisposable
             if (Find(spec.Id) is not { } row)
                 return;
 
-            Release(row);
-            // A running row keeps running: the scheduler starts a new Blur run
-            // with the new values once the row may press.
-            StopBlur(row);
+            if (row.Running && row.Spec.Trigger is { Hold: true } old &&
+                old.Hotkey.Chord != spec.Trigger?.Hotkey.Chord)
+            {
+                SetRunning(row, false);
+                UpdateWatch();
+            }
+            else
+            {
+                Release(row);
+                StopBlur(row);
+            }
             row.Configure(spec);
             row.DownDue = Stopwatch.GetTimestamp();
             _wake.Set();
@@ -238,7 +245,7 @@ internal sealed class KeyEngine : IDisposable
                 }
             }
 
-            if (hold)
+            if (hold && !chord.IsCombo)
             {
                 if (chord.IsMouse)
                 {
@@ -274,12 +281,13 @@ internal sealed class KeyEngine : IDisposable
         return changed;
     }
 
-    // Also called when a binding disappears before its physical button-up.
-    internal bool ReleaseMouseHold(Chord chord)
+    // The keyboard hook emits an up only for an active combo. Retiring a combo
+    // also stops any running Hold rows before their release path disappears.
+    internal bool ReleaseHookHold(Chord chord)
     {
         lock (_gate)
         {
-            if (!_mouseHolds.Remove(chord) || !StopHoldRows(chord))
+            if ((!chord.IsCombo && !_mouseHolds.Remove(chord)) || !StopHoldRows(chord))
                 return false;
 
             UpdateWatch();

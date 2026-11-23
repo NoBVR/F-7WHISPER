@@ -8,6 +8,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (Updater.RunHelper(args)) return;
+
         // Chromium reads this before the WebView2 controller has a background color.
         Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF0A0A0A");
         new DesktopApplication().Run(args);

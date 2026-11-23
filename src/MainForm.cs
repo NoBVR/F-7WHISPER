@@ -27,6 +27,7 @@ internal sealed class MainForm : Form
     private readonly Timer _countTimer = new() { Interval = 200 };
     private readonly Timer _saveTimer = new() { Interval = 500 };
     private readonly Timer _pickTimer = new() { Interval = 15 };
+    private readonly Updater _updater;
     private readonly KeyEngine _engine;
     private readonly Screen _initialScreen;
     private readonly Point? _initialPosition;
@@ -34,6 +35,9 @@ internal sealed class MainForm : Form
 
     private Dictionary<Chord, bool> _triggerOk = new();
     private MouseHotkeys? _mouse;
+    private KeyboardHook? _keyboard;
+    private int _comboId;
+    private bool _twoKey;
     private nint _hotkeyWindow;
     private int _lastId;
     private HotkeyPair _hotkeys;
@@ -51,9 +55,14 @@ internal sealed class MainForm : Form
 
     internal MainForm()
     {
+        _updater = new Updater(AppVersion, message =>
+        {
+            if (_ready && !_closing) Post(message);
+        }, Close);
         var settings = Settings.Load();
         _engine = new KeyEngine(settings.Rows, settings.SwitchStop);
         _hotkeys = settings.Hotkeys;
+        _twoKey = settings.TwoKey;
         _pinned = settings.Pinned;
 
         var primary = Screen.PrimaryScreen ?? Screen.AllScreens[0];
@@ -96,6 +105,7 @@ internal sealed class MainForm : Form
             // Posted edges normally run first. Recover any edge whose wake-up
             // message could not be posted, including a hold's physical release.
             while (DispatchMouseEdge()) { }
+            while (DispatchKeyboardEdge()) { }
 
             if (!_ready)
                 return;
@@ -182,7 +192,17 @@ internal sealed class MainForm : Form
                 wanted.TryAdd(start.Chord, HotkeyAction.Start);
 
             foreach (var chord in triggers)
-                wanted.TryAdd(chord, HotkeyAction.Rows);
+                if (!chord.IsCombo)
+                    wanted.TryAdd(chord, HotkeyAction.Rows);
+
+            if (_twoKey)
+            {
+                foreach (var chord in triggers)
+                    if (chord.IsCombo && Native.HasScanCode(chord.Vk) && Native.HasScanCode(chord.With) &&
+                        !wanted.ContainsKey(new Chord(chord.Vk, chord.Modifiers)) &&
+                        !wanted.ContainsKey(new Chord(chord.With, chord.Modifiers)))
+                        wanted.Add(chord, HotkeyAction.Rows);
+            }
         }
 
         ApplyBindings(wanted, refreshKeyboard);
@@ -191,26 +211,32 @@ internal sealed class MainForm : Form
         var results = new Dictionary<Chord, bool>();
         foreach (var chord in triggers)
         {
-            results[chord] = !_hotkeys.Uses(chord) && (_paused
-                ? _triggerOk.GetValueOrDefault(chord)
-                : _registered.ContainsKey(chord));
+            if (chord.IsCombo)
+                results[chord] = _twoKey && _keyboard is { Running: true } && _registered.ContainsKey(chord);
+            else
+                results[chord] = !_hotkeys.Uses(chord) && (_paused
+                    ? _triggerOk.GetValueOrDefault(chord)
+                    : _registered.ContainsKey(chord));
         }
         _triggerOk = results;
     }
 
     private void ApplyBindings(Dictionary<Chord, HotkeyAction> wanted, bool refreshKeyboard)
     {
+        if (_keyboard is { Running: false })
+            DropKeyboardHook();
+
         foreach (var (chord, registration) in _registered.ToArray())
         {
             if (wanted.TryGetValue(chord, out var action) && action == registration.Action &&
-                (chord.IsMouse || !refreshKeyboard))
+                (chord.UsesHook || !refreshKeyboard))
                 continue;
 
             _registered.Remove(chord);
-            if (!chord.IsMouse)
+            if (!chord.UsesHook)
                 Native.UnregisterHotKey(_hotkeyWindow, registration.Id);
             else if (registration.Action == HotkeyAction.Rows)
-                _engine.ReleaseMouseHold(chord);
+                _engine.ReleaseHookHold(chord);
         }
 
         var usedIds = _registered.Values.Select(registration => registration.Id).ToHashSet();
@@ -218,6 +244,13 @@ internal sealed class MainForm : Form
         {
             if (_registered.ContainsKey(chord))
                 continue;
+
+            // Hook tokens have their own ID space and never reach RegisterHotKey.
+            if (chord.IsCombo)
+            {
+                _registered.Add(chord, new Registration(unchecked(--_comboId), action));
+                continue;
+            }
 
             // There are fewer possible VK/modifier pairs than application hotkey IDs.
             // Rotate IDs so queued input for a retired binding cannot start its replacement.
@@ -232,6 +265,22 @@ internal sealed class MainForm : Form
 
             usedIds.Add(_lastId);
             _registered.Add(chord, new Registration(_lastId, action));
+        }
+
+        var combos = _registered.Where(pair => pair.Key.IsCombo)
+                                .ToDictionary(pair => pair.Key, pair => pair.Value.Id);
+        if (combos.Count == 0)
+        {
+            _keyboard?.Dispose();
+            _keyboard = null;
+        }
+        else if (_keyboard is not null)
+            _keyboard.SetBindings(combos);
+        else
+        {
+            _keyboard = KeyboardHook.Start(_hotkeyWindow, combos);
+            if (_keyboard is null)
+                DropKeyboardHook();
         }
 
         var mouseBindings = _registered.Where(pair => pair.Key.IsMouse)
@@ -270,7 +319,7 @@ internal sealed class MainForm : Form
 
         if (registration.Action == HotkeyAction.Rows)
         {
-            bool changed = down ? _engine.Activate(chord) : _engine.ReleaseMouseHold(chord);
+            bool changed = down ? _engine.Activate(chord) : _engine.ReleaseHookHold(chord);
             if (changed)
                 SendState();
         }
@@ -284,6 +333,37 @@ internal sealed class MainForm : Form
     private bool DispatchMouseEdge()
     {
         if (_mouse is null || !_mouse.TryRead(out var edge))
+            return false;
+
+        DispatchHotkey(edge.Chord, edge.RegistrationId, edge.Down);
+        return true;
+    }
+
+    private void DropKeyboardHook()
+    {
+        _keyboard?.Dispose();
+        _keyboard = null;
+        foreach (var chord in _registered.Keys.Where(chord => chord.IsCombo).ToArray())
+        {
+            _registered.Remove(chord);
+            _triggerOk[chord] = false;
+            _engine.ReleaseHookHold(chord);
+        }
+    }
+
+    private bool DispatchKeyboardEdge()
+    {
+        if (_keyboard is null)
+            return false;
+
+        if (!_keyboard.Running)
+        {
+            DropKeyboardHook();
+            SendState();
+            return false;
+        }
+
+        if (!_keyboard.TryRead(out var edge))
             return false;
 
         DispatchHotkey(edge.Chord, edge.RegistrationId, edge.Down);
@@ -379,6 +459,11 @@ internal sealed class MainForm : Form
                     RegisterHotkeys();
                     _ready = true;
                     SendState();
+                    _updater.Ready();
+                    return;
+
+                case "installUpdate":
+                    _updater.Install();
                     return;
 
                 case "window":
@@ -449,6 +534,7 @@ internal sealed class MainForm : Form
                         HotkeyPair.Read(message.Field("hotkeys"), fromFile: false) is not { } keys)
                         return;
                     _hotkeys = keys;
+                    _twoKey = message.Field("twoKey").Boolean() ?? _twoKey;
                     _engine.SwitchStop = switchStop;
                     RegisterHotkeys();
                     break;
@@ -569,6 +655,11 @@ internal sealed class MainForm : Form
                 m.Result = 0;
                 return;
 
+            case Native.WmKeyboardEdge:
+                DispatchKeyboardEdge();
+                m.Result = 0;
+                return;
+
             case Native.WmMouseEdge:
                 DispatchMouseEdge();
                 m.Result = 0;
@@ -632,6 +723,7 @@ internal sealed class MainForm : Form
                 start = HotkeyOk(_hotkeys.Start, HotkeyAction.Start),
                 stop = HotkeyOk(_hotkeys.Stop, HotkeyAction.Stop)
             },
+            twoKey = _twoKey,
             switchStop = _engine.SwitchStop
         });
     }
@@ -651,7 +743,7 @@ internal sealed class MainForm : Form
     {
         var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         var position = new SavedWindow(bounds.X, bounds.Y);
-        new Settings(_engine.Configuration(), _pinned, position, _hotkeys, _engine.SwitchStop).Save();
+        new Settings(_engine.Configuration(), _pinned, position, _hotkeys, _engine.SwitchStop, _twoKey).Save();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -676,6 +768,7 @@ internal sealed class MainForm : Form
             _disposed = true;
             _closing = true;
             UnregisterHotkeys();
+            _updater.Stop();
             _pickTimer.Dispose();
             _countTimer.Dispose();
             _saveTimer.Dispose();

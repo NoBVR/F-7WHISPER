@@ -31,6 +31,11 @@ internal static class JsonFields
 
 internal sealed record KeyChoice(string Label, string Code, int Vk)
 {
+    internal bool IsComboKey => Vk is not (1 or 2 or 4 or 5 or 6 or >= 0x10 and <= 0x12
+        or 0x5B or 0x5C or >= 0xA0 and <= 0xA5) &&
+        Code is not ("ShiftLeft" or "ShiftRight" or "ControlLeft" or "ControlRight"
+            or "AltLeft" or "AltRight" or "MetaLeft" or "MetaRight");
+
     internal static KeyChoice? Read(JsonElement value)
     {
         string? label = value.Field("label").Text();
@@ -50,21 +55,31 @@ internal sealed record KeyChoice(string Label, string Code, int Vk)
     }
 }
 
-// Windows identifies a shortcut by its VK and modifier mask.
-internal readonly record struct Chord(int Vk, uint Modifiers)
+internal readonly record struct Chord
 {
+    internal int Vk { get; }
+    internal int With { get; }
+    internal uint Modifiers { get; }
+    internal bool IsCombo => With != 0;
     internal bool IsMouse => Vk is 5 or 6;
+    internal bool UsesHook => IsMouse || IsCombo;
+
+    internal Chord(int vk, uint modifiers, int with = 0)
+    {
+        (Vk, With) = with != 0 && with < vk ? (with, vk) : (vk, with);
+        Modifiers = modifiers;
+    }
 }
 
 internal sealed record Hotkey(string Label, string Code, int Vk,
-                              bool Ctrl, bool Alt, bool Shift, bool Meta)
+                              bool Ctrl, bool Alt, bool Shift, bool Meta, KeyChoice? With = null)
 {
     internal uint Modifiers =>
         (Alt ? 1u : 0u) | (Ctrl ? 2u : 0u) | (Shift ? 4u : 0u) | (Meta ? 8u : 0u);
 
-    internal Chord Chord => new(Vk, Modifiers);
+    internal Chord Chord => new(Vk, Modifiers, With?.Vk ?? 0);
 
-    internal static Hotkey? Read(JsonElement value)
+    internal static Hotkey? Read(JsonElement value, bool allowCombo = true)
     {
         if (KeyChoice.Read(value) is not { } key ||
             value.Field("ctrl").Boolean() is not bool ctrl ||
@@ -73,7 +88,17 @@ internal sealed record Hotkey(string Label, string Code, int Vk,
             value.Field("meta").Boolean() is not bool meta)
             return null;
 
-        return new Hotkey(key.Label, key.Code, key.Vk, ctrl, alt, shift, meta);
+        KeyChoice? second = null;
+        var field = value.Field("with");
+        if (field.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null))
+        {
+            second = KeyChoice.Read(field);
+            if (!allowCombo || !key.IsComboKey || second is not { IsComboKey: true } ||
+                key.Vk == second.Vk || key.Code == second.Code)
+                return null;
+        }
+
+        return new Hotkey(key.Label, key.Code, key.Vk, ctrl, alt, shift, meta, second);
     }
 }
 
@@ -90,8 +115,8 @@ internal sealed record HotkeyPair(Hotkey? Start, Hotkey? Stop)
 
         var startField = value.Field("start");
         var stopField = value.Field("stop");
-        var start = Hotkey.Read(startField);
-        var stop = Hotkey.Read(stopField);
+        var start = Hotkey.Read(startField, allowCombo: false);
+        var stop = Hotkey.Read(stopField, allowCombo: false);
 
         if (fromFile)
         {
@@ -201,7 +226,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
 }
 
 internal sealed record Settings(RowSpec[] Rows, bool Pinned, SavedWindow? Window,
-                                HotkeyPair Hotkeys, bool SwitchStop)
+                                HotkeyPair Hotkeys, bool SwitchStop, bool TwoKey = true)
 {
     internal static readonly JsonSerializerOptions Json = new()
     {
@@ -240,7 +265,7 @@ internal sealed record Settings(RowSpec[] Rows, bool Pinned, SavedWindow? Window
 
             return new Settings(rows.ToArray(), root.Field("pinned").Boolean() ?? false,
                 position, HotkeyPair.Read(root.Field("hotkeys"), fromFile: true)!,
-                root.Field("switchStop").Boolean() ?? true);
+                root.Field("switchStop").Boolean() ?? true, root.Field("twoKey").Boolean() ?? true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                      or SecurityException or JsonException or InvalidOperationException)

@@ -5,7 +5,7 @@ Added on the Mac on 2026-11-22. A row's activate key (Hold or Press) can be two 
 **Status:**
 
 - **Mac host (`src-tauri/`) and shared page (`ui/index.html`):** written, type-checked and installed on the user's Mac. Page capture and conflicts were checked in the browser mock. **Not yet tested with real key presses**, and the `cfg(windows)` paths of the Tauri build couldn't be compiled on the Mac.
-- **The Windows C# host (`src/*.cs`) is not updated yet.** The page hides the feature from a host that doesn't report it (see "Page gate"), so the current Windows app keeps working as before after a rebuild. Section "Windows: what to change" is the to-do list for the PC.
+- **Windows C# host (`src/*.cs`): done on the PC on 2026-11-22** (version 1.1.0), following "Windows: what to change" below. `src/KeyboardHook.cs` is the `WH_KEYBOARD_LL` hook. It compiles and is installed; **not yet tested with real key presses** either. One difference from the list: a key the hook swallowed is trusted as held without asking `GetAsyncKeyState`, because Windows never records a swallowed key as down.
 
 ## Contract (both hosts)
 
@@ -81,9 +81,9 @@ A hotkey can have an optional second key, `with`:
 - `main.rs`: `twoKey` in `state`, the `settings` message and the save.
 - `engine.rs` `Rows::edit`: a running Hold row stops when its activate key is changed or removed. The old key's release would no longer reach the row, so before this it kept running. Editing anything else, including Hold → Press with the same key, keeps it running, as before.
 
-## Windows: what to change (not done; do on the PC)
+## Windows: what to change (done on the PC, 2026-11-22)
 
-Nothing here has been compiled: this Mac has no `dotnet`. Read the current code first, because the line numbers drift.
+Kept as the record of what the PC did. It was written on the Mac, which has no `dotnet`.
 
 1. **`src/Settings.cs`**
    - `Hotkey` gets an optional second key: `KeyChoice? With`. `Hotkey.Read` parses `with` with `KeyChoice.Read`. It rejects modifier VKs (0x10–0x12, 0x5B, 0x5C, 0xA0–0xA5), mouse VKs 5/6 and `With.Vk == Vk`, and treats missing or `null` as one key.

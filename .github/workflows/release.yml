@@ -1,0 +1,92 @@
+name: Release
+
+# Push a tag such as v1.1.0 to build both apps and publish them as a GitHub release.
+# The apps' updaters look for these exact asset names:
+#   F-7WHISPER-windows-x64.zip   (F-7WHISPER.exe + ui/)
+#   F-7WHISPER-macos.dmg         (universal)
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the app version
+        shell: pwsh
+        run: |
+          $v = ([xml](Get-Content F7Whisper.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME doesn't match F7Whisper.csproj version $v" }
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The csproj builds blur_engine.dll with cargo first.
+      - run: dotnet publish F7Whisper.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          Remove-Item out\*.pdb -ErrorAction SilentlyContinue
+          if (-not (Test-Path out\F-7WHISPER.exe) -or -not (Test-Path out\ui\index.html)) { throw "Publish output is missing files" }
+          Compress-Archive -Path out\* -DestinationPath F-7WHISPER-windows-x64.zip
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows
+          path: F-7WHISPER-windows-x64.zip
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Tag matches the app version
+        run: node -e "const v = require('./src-tauri/tauri.conf.json').version; if ('v' + v !== process.env.GITHUB_REF_NAME) { console.error('Tag ' + process.env.GITHUB_REF_NAME + ' does not match tauri.conf.json version ' + v); process.exit(1); }"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Universal = one app for Apple Silicon and Intel Macs.
+      - run: npx tauri build --target universal-apple-darwin --bundles dmg
+
+      - run: cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg F-7WHISPER-macos.dmg
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: mac
+          path: F-7WHISPER-macos.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" F-7WHISPER-windows-x64.zip F-7WHISPER-macos.dmg --repo "$GITHUB_REPOSITORY" --title "F-7WHISPER ${GITHUB_REF_NAME#v}" --generate-notes

@@ -1,16 +1,27 @@
 # F-7WHISPER handoff: Windows PC → Mac
 
-Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac could continue locally, then updated the same day on the Mac after the two-key change (§0). Source code is authoritative if this file goes stale.
+Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac could continue locally, then updated the same day on the Mac (two-key keys) and on the PC (version 1.1.0, §0). Source code is authoritative if this file goes stale.
 
 ---
 
-## 0. Start here: what changed last (2026-11-22, on the Mac)
+## 0. Start here: what changed last (2026-11-22, on the PC: version 1.1.0)
 
-**Two-key activate keys** were added: a row's Hold or Press key can be two ordinary keys held together (`F7 + G`), with a Settings switch, **Two-key activate keys**, to turn it off. The user asked for this in their words: "Any key + any key", "Add an option to disable it", and a note so the Windows version can be updated to match.
+**For the Mac, first:** the repo's history was rewritten, so an older clone must be reset once, then use the no-reply identity (details in [`docs/UPDATES.md`](UPDATES.md) "Git identity"):
 
-- **Mac host (`src-tauri/`) and shared page (`ui/index.html`):** written, type-checked and installed on the Mac, but **not yet tested with real key presses**. The `cfg(windows)` paths of the Tauri build weren't compiled (the Mac can't cross-check them).
-- **Not done: the Windows C# host.** The full contract and the Windows to-do list are in [`docs/TWO-KEY.md`](TWO-KEY.md). Claude on the PC: read it, make the Windows changes, rebuild and reinstall the Windows app (§7).
-- Until then a rebuilt Windows app behaves exactly as before. The page only offers two-key capture when the host sends `twoKey` in `state`, and the C# host doesn't yet.
+```
+git fetch origin && git reset --hard origin/main
+git config user.name NoBVR
+git config user.email 146703888+NoBVR@users.noreply.github.com
+```
+
+What the PC did:
+
+- **Repo is public now.** The user chose this so the apps can read GitHub Releases without a sign-in. Before that, every commit's author was rewritten to the no-reply address and the 13 old Actions runs (which showed the emails) were deleted, both with the user's OK.
+- **Two-key activate keys on Windows:** the C# host now follows [`docs/TWO-KEY.md`](TWO-KEY.md) (new `src/KeyboardHook.cs`). Both hosts have it; **neither has been tested with real key presses yet.**
+- **Updates:** both apps check GitHub Releases and show an update bar at the top with a round download button. Windows downloads, replaces itself and restarts; macOS downloads the dmg and opens it. The Mac side (`src-tauri/src/update.rs`) was written on the PC and only compiled by GitHub's Mac runner, **so test it on the real Mac.** See [`docs/UPDATES.md`](UPDATES.md), including how to release (`git tag vX.Y.Z && git push origin vX.Y.Z`).
+- **Version 1.1.0** is released on GitHub with both apps. To get it on the Mac, install `F-7WHISPER-macos.dmg` from the repo's Releases page; later versions then show up in the app.
+
+Two-key keys were added on the Mac earlier the same day. The user asked for this in their words: "Any key + any key", "Add an option to disable it", and a note so the Windows version could be updated to match.
 
 ### Mac key notes (from the user's first real-Mac test)
 

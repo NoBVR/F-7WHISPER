@@ -10,6 +10,9 @@ Claude works on this app on two machines: the user's Windows PC (Windows app, C#
 2. **After every change, push:** commit (see the commit rule below) and `git push origin main`, so the other machine can pull it. Don't leave finished work only on one machine.
 3. **When a change needs the other platform too**, write it down in `docs/`: what changed, the contract, and a to-do list for the other host (see `docs/TWO-KEY.md`). Link it from `docs/HANDOFF.md` §0 and push it with the change. When that work is done on the other machine, mark it done there and push.
 4. **Then update this machine's installed app** (Mac: replace `/Applications/F-7WHISPER.app`; Windows: the `dotnet publish` in `docs/HANDOFF.md` §7). Tell the user what the other machine still has to do.
+5. **When the user wants a version shipped to both apps**, bump the version and push a `vX.Y.Z` tag ([`docs/UPDATES.md`](docs/UPDATES.md)). The installed apps then offer the update themselves.
+
+The repo is public: never commit secrets or personal details, and commit as `NoBVR <146703888+NoBVR@users.noreply.github.com>` (set per repo with `git config`).
 
 ## Hard rules
 

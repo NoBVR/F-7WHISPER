@@ -67,10 +67,25 @@ body.mac { letter-spacing: normal; }
 body.mac .title { padding-left: 84px; }
 body.mac .pin { margin-right: 16px; }
 
-/* ── macOS Accessibility notice ── */
+/* ── Notices: macOS Accessibility, and the update bar at the top ── */
 .notice { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 16px 16px; padding: 6px 6px 6px 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); font-size: 13px; }
 .notice span { flex: 1 1 auto; min-width: 0; }
 .notice .btn { height: 28px; padding: 0 12px; font-size: 13px; }
+/* 4 px clears the caption buttons' hover fill; 12 px + the toolbar's 4 px top padding = the usual 16 px gap */
+.notice.update { margin: 4px 16px 12px; }
+.update[data-status="failed"] #updateText { color: var(--red-text); }
+/* Round download button: the primary white of Add; while busy it turns grey and a ring fills around its edge */
+.dl { position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9999px; background: var(--text); color: var(--bg); }
+.dl:hover { background: #d4d4d4; }
+.dl:disabled { background: var(--fill); color: var(--text); cursor: default; }
+.dl .ring { position: absolute; inset: 0; transform: rotate(-90deg); fill: none; stroke-width: 2; visibility: hidden; }
+.dl:disabled .ring { visibility: visible; }
+.dl .track { stroke: var(--line); }
+.dl .bar { stroke: var(--text); stroke-linecap: round; stroke-dasharray: 78.54; stroke-dashoffset: 78.54; transition: stroke-dashoffset 0.15s linear; }
+.dl[data-status="installing"] .ring { animation: dl-spin 0.9s linear infinite; }
+@keyframes dl-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+.dl .check, .dl[data-status="opened"] .arrow { display: none; }
+.dl[data-status="opened"] .check { display: block; }
 
 /* ── Toolbar ── */
 /* 4 px clears the caption buttons' hover fill and puts the buttons ~16 px under the title text: the same gap as the sides and the table */
@@ -177,6 +192,15 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
   </button>
 </header>
 
+<div class="notice update squircle" id="update" role="status" hidden>
+  <span id="updateText"></span>
+  <button class="dl" id="updateBtn" type="button" aria-label="Download and install">
+    <svg class="ring" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><circle class="track" cx="14" cy="14" r="12.5"/><circle class="bar" id="updateRing" cx="14" cy="14" r="12.5"/></svg>
+    <svg class="arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+    <svg class="check" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>
+  </button>
+</div>
+
 <div class="toolbar">
   <button class="btn" id="startAll" type="button">
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.75v8.5L10.25 6z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>Start all<kbd id="startKbd" hidden></kbd>
@@ -202,7 +226,7 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
   <div class="tbody" id="rows"></div>
 </main>
 
-<footer class="foot" data-drag><span id="version">v1.0.0</span></footer>
+<footer class="foot" data-drag><span id="version"></span></footer>
 
 <div class="menu" id="menu" role="menu" hidden>
   <button type="button" role="menuitem" data-menu="edit">Edit</button>
@@ -356,14 +380,14 @@ const mock = (() => {
   ];
   const st = { pinned: false, hotkeys: { start: F6, stop: F7 }, switchStop: true, twoKey: true };
   const push = () => setTimeout(() => receive({
-    type: "state", version: "1.0.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
+    type: "state", version: "1.1.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
     rows: rows.map((r) => ({ ...r, triggerOk: !!r.trigger && (st.twoKey || !r.trigger.hotkey.with) })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop, twoKey: st.twoKey,
   }));
   const find = (id) => rows.find((r) => r.id === id);
   const fromInput = (i) => (i.kind === "click"
     ? { kind: "click", button: i.button, at: i.at, label: null, code: null, vk: null }
     : { kind: "key", label: i.key.label, code: i.key.code, vk: i.key.vk, button: null, at: null });
-  let pickTimer = 0;
+  let pickTimer = 0, updTimer = 0;
   if (!host) setInterval(() => {
     const counts = {};
     rows.forEach((r) => { if (r.running) { r.acc = (r.acc || 0) + 200; const n = Math.floor(r.acc / r.intervalMs); if (n) { r.acc -= n * r.intervalMs; r.count += n; counts[r.id] = r.count; } } });
@@ -383,8 +407,20 @@ const mock = (() => {
       else if (m.type === "pickPoint") { pickTimer = setTimeout(() => receive({ type: "point", x: 812, y: 440 }), 1500); return; }
       else if (m.type === "pickCancel") { clearTimeout(pickTimer); return; }
       else if (m.type === "fit") { document.body.style.height = `${m.height}px`; return; }   // preview only: the host sizes the real window
+      else if (m.type === "installUpdate") {
+        let p = 0;
+        clearInterval(updTimer);
+        updTimer = setInterval(() => {
+          p += 0.08;
+          if (p < 1) return receive({ type: "update", version: "1.2.0", status: "downloading", progress: p });
+          clearInterval(updTimer);
+          receive({ type: "update", version: "1.2.0", status: UA_MAC ? "opened" : "installing", progress: 1 });
+        }, 120);
+        return;
+      }
       else if (m.type !== "ready") return;
       push();
+      if (m.type === "ready") setTimeout(() => receive({ type: "update", version: "1.2.0", status: "available", progress: 0 }), 300);
     },
   };
 })();
@@ -431,6 +467,7 @@ function neededHeight() {
   const n = state.rows.length;
   let h = 32 + 52 + 36 + (n ? Math.min(n, MAX_ROWS) * 48 : 96) + 16;
   if (!$("access").hidden) h += $("access").offsetHeight + 16;
+  if (!$("update").hidden) h += $("update").offsetHeight + 16;
   for (const d of document.querySelectorAll(".scrim:not([hidden]) .dialog")) h = Math.max(h, d.scrollHeight + 32);
   return Math.ceil(h);
 }
@@ -455,7 +492,7 @@ function render() {
   document.body.classList.toggle("mac", isMac());
   $("access").hidden = state.accessOk !== false;
   $("pin").setAttribute("aria-pressed", String(!!state.pinned));
-  $("version").textContent = `v${state.version || "1.0.0"}`;
+  $("version").textContent = state.version ? `v${state.version}` : "";
   renderKbd("start");
   renderKbd("stop");
 
@@ -490,6 +527,37 @@ function render() {
   fit();
 }
 
+/* ── Update bar: the host checks GitHub Releases and sends { type: "update", version, status, progress } ── */
+let update = null;
+const RING = 2 * Math.PI * 12.5;
+function renderUpdate() {
+  const box = $("update");
+  box.hidden = !update;
+  if (!update) return;
+  const v = update.version, s = update.status;
+  box.dataset.status = s;
+  $("updateText").textContent = {
+    downloading: `Downloading version ${v}`,
+    installing: `Installing version ${v}`,
+    opened: "Drag F-7WHISPER to Applications, then reopen it",
+    failed: "Download failed",
+  }[s] || `Version ${v} is available`;
+  const btn = $("updateBtn");
+  btn.dataset.status = s;
+  btn.disabled = s === "downloading" || s === "installing" || s === "opened";
+  btn.setAttribute("aria-label", s === "failed" ? "Try again" : "Download and install");
+  const p = s === "downloading" ? Math.max(0, Math.min(1, Number(update.progress) || 0)) : s === "installing" ? 0.25 : s === "opened" ? 1 : 0;
+  const bar = $("updateRing");
+  bar.style.strokeDashoffset = String(RING * (1 - p));
+  bar.style.opacity = p > 0 ? "1" : "0";   // a round cap would show as a dot at 0 %
+}
+$("updateBtn").addEventListener("click", () => {
+  if (!update || !(update.status === "available" || update.status === "failed")) return;
+  update = { ...update, status: "downloading", progress: 0 };
+  renderUpdate();
+  send({ type: "installUpdate" });
+});
+
 const MODE_NAME = { hold: "Hold", toggle: "Press" };
 const ICON_CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg>';
 function trigChip(r) {
@@ -509,6 +577,7 @@ function inputOf(r, trigger) {
 function receive(msg) {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "state") { state = msg; render(); }
+  else if (msg.type === "update") { update = typeof msg.version === "string" ? msg : null; renderUpdate(); fit(); }
   else if (msg.type === "counts") {
     for (const [id, n] of Object.entries(msg.counts || {})) {
       const row = state.rows.find((r) => r.id === id);

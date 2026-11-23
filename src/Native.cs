@@ -22,6 +22,7 @@ internal static class Native
     internal const int WmHotkey = 0x0312;
     internal const int WmStateChanged = 0x8001;
     internal const int WmMouseEdge = 0x8002;
+    internal const int WmKeyboardEdge = 0x8003;
     internal const uint ModNoRepeat = 0x4000;
 
     internal static void ApplyFrame(nint hwnd)
@@ -55,6 +56,8 @@ internal static class Native
     internal static bool LeftButtonDown => GetAsyncKeyState(1) < 0;
 
     internal static bool KeyDown(int vk) => GetAsyncKeyState(vk) < 0;
+
+    internal static bool HasScanCode(int vk) => MapVirtualKeyW((uint)vk, 4) != 0;
 
     internal static void PostStateChanged(nint hwnd) => PostMessageW(hwnd, WmStateChanged, 0, 0);
 
@@ -315,6 +318,44 @@ internal static class Native
         public uint Type;
         public InputUnion Data;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ThreadMessage
+    {
+        public nint Window;
+        public uint Message;
+        public nuint WParam;
+        public nint LParam;
+        public uint Time;
+        public int X, Y;
+        public uint Private;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    internal delegate nint HookProc(int code, nint wParam, nint lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern nint GetModuleHandleW(string? moduleName);
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    internal static extern nint SetWindowsHookExW(int type, HookProc callback, nint module, uint threadId);
+
+    [DllImport("user32.dll")]
+    internal static extern bool UnhookWindowsHookEx(nint hook);
+
+    [DllImport("user32.dll")]
+    internal static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    internal static extern uint MsgWaitForMultipleObjectsEx(
+        uint count, ref nint handles, uint timeout, uint wakeMask, uint flags);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    internal static extern bool PeekMessageW(
+        out ThreadMessage message, nint window, uint first, uint last, uint remove);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    internal static extern nint DispatchMessageW(ref ThreadMessage message);
 
     private delegate bool EnumWindowsProc(nint hwnd, nint argument);
 

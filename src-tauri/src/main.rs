@@ -4,6 +4,8 @@ mod engine;
 mod hotkeys;
 mod mouse;
 mod settings;
+#[cfg(target_os = "macos")]
+mod update;
 mod wait;
 mod window;
 
@@ -62,6 +64,11 @@ enum Message {
         width: Option<i64>,
     },
     OpenAccessSettings,
+    #[cfg(target_os = "macos")]
+    InstallUpdate,
+    #[cfg(target_os = "macos")]
+    #[serde(skip)]
+    Update(update::Event),
     #[serde(skip)]
     Activate,
     #[serde(skip)]
@@ -146,6 +153,8 @@ struct Host {
     window: WebviewWindow,
     engine: Engine,
     alarm: Alarm,
+    #[cfg(target_os = "macos")]
+    updater: update::Updater,
     position: Option<Position>,
     width: i64,
     height: i64,
@@ -192,6 +201,8 @@ impl Host {
             window,
             engine,
             alarm: Alarm::new(app.clone()),
+            #[cfg(target_os = "macos")]
+            updater: update::Updater::new(app),
             position,
             width: window::WIDTH,
             height,
@@ -419,6 +430,26 @@ impl Host {
                 self.ready = true;
                 self.reveal();
                 self.capture();
+                self.state();
+                #[cfg(target_os = "macos")]
+                if let Some(message) = self.updater.ready() {
+                    self.emit(message);
+                }
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            Message::InstallUpdate => {
+                if let Some(message) = self.updater.install() {
+                    self.emit(message);
+                }
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            Message::Update(event) => {
+                if let Some(message) = self.updater.handle(event) {
+                    self.emit(message);
+                }
+                return;
             }
             Message::Activate => {
                 self.activate();
@@ -575,7 +606,11 @@ impl Host {
         if self.save_at.is_some_and(|t| t <= now) {
             self.save_at = (!self.save()).then(|| now + Duration::from_secs(1));
         }
+        #[cfg(target_os = "macos")]
+        self.updater.tick(now);
         self.alarm.arm([
+            #[cfg(target_os = "macos")]
+            self.updater.due,
             self.show_at, self.counts_at, self.save_at, self.access_at,
             self.picker.as_ref().map(|p| p.due),
         ].into_iter().flatten().min());
