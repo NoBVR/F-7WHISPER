@@ -86,6 +86,8 @@ body.mac .pin { margin-right: 16px; }
 @keyframes dl-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
 .dl .check, .dl[data-status="opened"] .arrow { display: none; }
 .dl[data-status="opened"] .check { display: block; }
+/* X ("Not now") sits 4 px after the download button */
+.notice.update .ghost { margin-left: -8px; }
 
 /* ── Toolbar ── */
 /* 4 px clears the caption buttons' hover fill and puts the buttons ~16 px under the title text: the same gap as the sides and the table */
@@ -198,6 +200,9 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
     <svg class="ring" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><circle class="track" cx="14" cy="14" r="12.5"/><circle class="bar" id="updateRing" cx="14" cy="14" r="12.5"/></svg>
     <svg class="arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
     <svg class="check" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>
+  </button>
+  <button class="ghost" id="updateClose" type="button" aria-label="Not now">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>
   </button>
 </div>
 
@@ -541,11 +546,13 @@ function renderUpdate() {
     installing: `Installing version ${v}`,
     opened: "Drag F-7WHISPER to Applications, then reopen it",
     failed: "Download failed",
-  }[s] || `Version ${v} is available`;
+  }[s] || `Update to version ${v}?`;
   const btn = $("updateBtn");
+  const busy = s === "downloading" || s === "installing";
   btn.dataset.status = s;
-  btn.disabled = s === "downloading" || s === "installing" || s === "opened";
-  btn.setAttribute("aria-label", s === "failed" ? "Try again" : "Download and install");
+  btn.disabled = busy || s === "opened";
+  btn.setAttribute("aria-label", s === "failed" ? "Try again" : "Update");
+  $("updateClose").hidden = busy;   // neither a download nor an install can be stopped
   const p = s === "downloading" ? Math.max(0, Math.min(1, Number(update.progress) || 0)) : s === "installing" ? 0.25 : s === "opened" ? 1 : 0;
   const bar = $("updateRing");
   bar.style.strokeDashoffset = String(RING * (1 - p));
@@ -556,6 +563,15 @@ $("updateBtn").addEventListener("click", () => {
   update = { ...update, status: "downloading", progress: 0 };
   renderUpdate();
   send({ type: "installUpdate" });
+});
+// Nothing downloads until the button is clicked. X hides the offer until F-7WHISPER next starts.
+let dismissed = null;
+$("updateClose").addEventListener("click", () => {
+  if (!update) return;
+  dismissed = update.version;
+  update = null;
+  renderUpdate();
+  fit();
 });
 
 const MODE_NAME = { hold: "Hold", toggle: "Press" };
@@ -577,7 +593,12 @@ function inputOf(r, trigger) {
 function receive(msg) {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "state") { state = msg; render(); }
-  else if (msg.type === "update") { update = typeof msg.version === "string" ? msg : null; renderUpdate(); fit(); }
+  else if (msg.type === "update") {
+    if (msg.status === "available" && msg.version === dismissed) return;   // the 6-hourly re-check of an offer closed with X
+    update = typeof msg.version === "string" ? msg : null;
+    renderUpdate();
+    fit();
+  }
   else if (msg.type === "counts") {
     for (const [id, n] of Object.entries(msg.counts || {})) {
       const row = state.rows.find((r) => r.id === id);

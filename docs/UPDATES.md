@@ -38,7 +38,9 @@ Either machine can release; the workflow builds both apps on GitHub's runners.
 
 ## Page
 
-- The bar sits under the title bar. Its text says the version, then "Downloading…", "Installing…", the macOS drag hint, or "Download failed".
+- **Nothing downloads or installs on its own.** The bar asks "Update to version X?" and waits. Only the round button starts the download (the user asked for this on 2026-11-23: "I don't want it to auto update. It should prompt you").
+- An X ("Not now") after the button hides the bar until F-7WHISPER next starts; the 6-hourly re-check of the same version stays hidden, a newer version shows again. The X shows when the bar asks, on the macOS drag hint and after a failure, not while downloading or installing (neither can be stopped).
+- The bar sits under the title bar. Its text then says "Downloading…", "Installing…", the macOS drag hint, or "Download failed".
 - The round button is primary white. While busy it turns grey and a ring around it shows progress; while installing the ring spins; on macOS it shows a check after the dmg opens.
 - The page counts the bar's height in its `fit` message.
 - The browser mock offers 1.2.0 and simulates a download.
