@@ -228,8 +228,16 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - Blur's 147 tests on Windows and macOS.
 - Mac CI builds; Blur on GitHub's macOS 26 VM at ~997/s with every event delivered.
 - Two-key activate keys (2026-11-22, on the user's Mac): `cargo check` clean, Blur's 147 tests pass, app built and installed, page capture / conflicts / switch / old-host gate checked in the browser mock.
+- Version 1.1.0 (2026-11-23, on the PC):
+  - the Windows two-key host compiles and the installed app starts with the old settings file;
+  - the `cfg(windows)` Tauri paths pass `cargo check`;
+  - the release workflow built and published v1.1.0;
+  - the **Windows updater works end to end**: a copy built as 1.0.9 showed the bar, downloaded the release zip, replaced itself, restarted as 1.1.0 in about 3 s and left no temp or backup files. This was driven over CDP, with no screen input.
+
+**Not verified on Windows:** two-key activate keys with real key presses.
 
 **Not verified on a real Mac:**
+- the updater (download to `~/Downloads`, opening the dmg); it only compiled on GitHub's Mac runner;
 - traffic-light position and title bar;
 - key and click delivery into real apps;
 - the Accessibility flow;
@@ -237,8 +245,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - point picking and "Only in";
 - the real-hardware rate;
 - whether `NSWorkspace` calls off the main thread misbehave;
-- two-key activate keys with real key presses (the keyboard event tap, swallowing the completing key, Hold release), and whether macOS asks for Input Monitoring for it;
-- the `cfg(windows)` paths of the Tauri build after the two-key change (not compiled).
+- two-key activate keys with real key presses (the keyboard event tap, swallowing the completing key, Hold release), and whether macOS asks for Input Monitoring for it.
 
 The user's first real-Mac report and what was done about it are in §0.
 
