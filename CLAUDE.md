@@ -17,5 +17,6 @@ The repo is public: never commit secrets or personal details, and commit as `NoB
 ## Hard rules
 
 - Never edit `blur-engine/src/engine/*.rs`, `blur-engine/src/error.rs`, `blur-engine/src/app_state.rs` or `blur-engine/src/settings/mod.rs` (byte-identical copies of Blur AutoClicker v3.10.2). The macOS versions live in `blur-engine/src/engine_mac/`.
+- F-7WHISPER is GPL-3.0 (`LICENSE`) because both apps ship Blur's engine. Files changed from Blur's (`blur-engine/src/engine_mac/*.rs` and the stand-ins `elevation.rs`, `hotkeys.rs`, `icon.rs`, `indicator.rs`, `portable.rs`) keep a dated "changed by F-7WHISPER" note in their header: update the date when you change one, and add the note to any new file made from Blur's.
 - Don't post real key presses or clicks on the user's machine (examples, tests, computer use) without asking.
 - Commits go through a Sonnet subagent with the exact files to stage; end messages with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.

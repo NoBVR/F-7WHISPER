@@ -14,8 +14,10 @@ The repo is **public** so the apps can read releases without a sign-in. Its hist
 2. Commit and push to `main`.
 3. Tag and push the tag: `git tag v1.2.0 && git push origin v1.2.0`.
 4. `.github/workflows/release.yml` checks the tag matches the csproj and Tauri versions, builds both apps and publishes the release with exactly these assets (the updaters look for these names):
-   - `F-7WHISPER-windows-x64.zip`: `F-7WHISPER.exe` and `ui/`
-   - `F-7WHISPER-macos.dmg`: universal
+   - `F-7WHISPER-windows-x64.zip`: `F-7WHISPER.exe`, `ui/` and `LICENSE.txt`
+   - `F-7WHISPER-macos.dmg`: universal, with the license at `F-7WHISPER.app/Contents/Resources/LICENSE`
+
+   The build fails if either download is missing the license (GPL-3.0 asks for it to come with every copy).
 5. Every installed app on 1.1.0 or later sees the update within 6 hours, or on its next start.
 
 Either machine can release; the workflow builds both apps on GitHub's runners.

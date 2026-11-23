@@ -1,3 +1,7 @@
+// Changed for macOS by F-7WHISPER on 2026-11-22, from Blur AutoClicker v3.10.2's
+// src-tauri/src/engine/worker.rs (GPL-3.0, see LICENSE-BLUR-GPL-3.0). Diff it against
+// ../engine/worker.rs to see every change.
+
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;

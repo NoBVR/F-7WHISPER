@@ -1,3 +1,7 @@
+// Changed for macOS by F-7WHISPER on 2026-11-22, from Blur AutoClicker v3.10.2's
+// src-tauri/src/engine/mouse.rs (GPL-3.0, see LICENSE-BLUR-GPL-3.0). Diff it against
+// ../engine/mouse.rs to see every change.
+
 use super::cycle::{execute_click_cycle, ClickCycleKind, ClickCyclePlan};
 use super::worker::{sleep_interruptible, RunControl};
 use std::sync::atomic::{AtomicBool, Ordering};

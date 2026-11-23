@@ -1,4 +1,4 @@
-//! STAND-IN for Blur's src-tauri/src/hotkeys.rs (v3.10.2).
+//! STAND-IN for Blur's src-tauri/src/hotkeys.rs (v3.10.2), made by F-7WHISPER on 2026-11-22.
 //!
 //! Blur's file installs low-level keyboard/mouse hooks and drives its hotkey
 //! listener, none of which F-7WHISPER uses. The engine only needs:

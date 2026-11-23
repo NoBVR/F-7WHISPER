@@ -6,6 +6,7 @@
 //! - `hotkeys.rs`, `icon.rs`, `indicator.rs`, `portable.rs`, `elevation.rs`:
 //!   small stand-ins with Blur's signatures (see each file's header).
 //! - `tauri` is the `f7-tauri-shim` crate in tauri-shim/.
+//! - `engine_mac/`: Blur's engine/ changed for macOS (see each file's header).
 //! - `f7.rs`: the F-7WHISPER API (`BlurRun` and the `f7_blur_*` C functions).
 #![allow(dead_code, unused)]
 #![cfg(any(windows, target_os = "macos"))]

@@ -1,4 +1,4 @@
-//! STAND-IN for Blur's src-tauri/src/icon.rs (v3.10.2).
+//! STAND-IN for Blur's src-tauri/src/icon.rs (v3.10.2), made by F-7WHISPER on 2026-11-22.
 //!
 //! Blur repaints its window and tray icons when a run starts or stops.
 //! F-7WHISPER has no Blur window or tray, so `set_app_icons` is a no-op and

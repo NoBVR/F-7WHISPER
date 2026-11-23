@@ -1,4 +1,4 @@
-//! STAND-IN for Blur's src-tauri/src/portable.rs (v3.10.2).
+//! STAND-IN for Blur's src-tauri/src/portable.rs (v3.10.2), made by F-7WHISPER on 2026-11-22.
 //!
 //! Blur detects a portable install from a marker file next to its exe. Inside
 //! F-7WHISPER that marker never applies, so this always reports "not portable".

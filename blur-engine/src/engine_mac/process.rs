@@ -1,3 +1,7 @@
+// Changed for macOS by F-7WHISPER on 2026-11-22, from Blur AutoClicker v3.10.2's
+// src-tauri/src/engine/process.rs (GPL-3.0, see LICENSE-BLUR-GPL-3.0). Diff it against
+// ../engine/process.rs to see every change.
+
 use super::ClickerConfig;
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;

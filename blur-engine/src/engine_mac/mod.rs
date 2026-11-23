@@ -1,3 +1,7 @@
+// Changed for macOS by F-7WHISPER on 2026-11-22, from Blur AutoClicker v3.10.2's
+// src-tauri/src/engine/mod.rs (GPL-3.0, see LICENSE-BLUR-GPL-3.0). Diff it against
+// ../engine/mod.rs to see every change.
+
 // macOS: share the platform-independent Blur modules.
 #[path = "../engine/cycle.rs"]
 pub mod cycle;

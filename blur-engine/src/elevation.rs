@@ -1,4 +1,4 @@
-//! STAND-IN for Blur's src-tauri/src/elevation.rs (v3.10.2).
+//! STAND-IN for Blur's src-tauri/src/elevation.rs (v3.10.2), made by F-7WHISPER on 2026-11-22.
 //!
 //! Blur's file watches for elevated foreground windows and shows a prompt.
 //! F-7WHISPER only needs the `BlockedWindow` type, because it is a field of

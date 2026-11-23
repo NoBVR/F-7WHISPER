@@ -1,4 +1,4 @@
-//! STAND-IN for Blur's src-tauri/src/indicator.rs (v3.10.2).
+//! STAND-IN for Blur's src-tauri/src/indicator.rs (v3.10.2), made by F-7WHISPER on 2026-11-22.
 //!
 //! Blur flashes an on-screen indicator window on each press and shows a
 //! countdown to the next one. F-7WHISPER has no such window, so both calls the

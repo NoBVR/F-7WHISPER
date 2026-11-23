@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item out\*.pdb -ErrorAction SilentlyContinue
-          if (-not (Test-Path out\F-7WHISPER.exe) -or -not (Test-Path out\ui\index.html)) { throw "Publish output is missing files" }
+          if (-not (Test-Path out\F-7WHISPER.exe) -or -not (Test-Path out\ui\index.html) -or -not (Test-Path out\LICENSE.txt)) { throw "Publish output is missing files" }
           Compress-Archive -Path out\* -DestinationPath F-7WHISPER-windows-x64.zip
 
       - uses: actions/upload-artifact@v5
@@ -69,6 +69,9 @@ jobs:
 
       # Universal = one app for Apple Silicon and Intel Macs.
       - run: npx tauri build --target universal-apple-darwin --bundles dmg
+
+      - name: App carries the license
+        run: find src-tauri/target/universal-apple-darwin/release/bundle -path '*.app/Contents/Resources/LICENSE' | grep -q .
 
       - run: cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg F-7WHISPER-macos.dmg
 
