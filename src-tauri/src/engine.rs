@@ -138,7 +138,7 @@ fn trusted_cached(now: Instant) -> bool {
 }
 
 fn bound(spec: &RowSpec, key: &Hotkey, mode: Mode) -> bool {
-    spec.input.trigger.as_ref().is_some_and(|t| t.mode == mode && t.hotkey.same_binding(key))
+    spec.active_trigger().is_some_and(|t| t.mode == mode && t.hotkey.same_binding(key))
 }
 
 #[derive(Serialize)]
@@ -271,7 +271,8 @@ impl Rows {
         if let Value::Array(items) = &mut value {
             for (item, row) in items.iter_mut().zip(&self.rows) {
                 if let Value::Object(fields) = item {
-                    let ok = row.spec.input.trigger.as_ref().is_some_and(|t| trigger_ok(&t.hotkey));
+                    let ok = row.spec.active_trigger().is_some_and(|t| trigger_ok(&t.hotkey));
+                    fields.insert("disabled".into(), Value::Bool(row.spec.disabled));
                     fields.insert("triggerOk".into(), Value::Bool(ok));
                 }
             }
@@ -279,10 +280,10 @@ impl Rows {
         value
     }
 
-    /// Every row's activation key, duplicates included.
+    /// Enabled rows' activation keys, duplicates included.
     pub fn trigger_keys(&self) -> Vec<Hotkey> {
         self.rows.iter()
-            .filter_map(|r| r.spec.input.trigger.as_ref().map(|t| t.hotkey.clone()))
+            .filter_map(|r| r.spec.active_trigger().map(|t| t.hotkey.clone()))
             .collect()
     }
 
@@ -318,8 +319,9 @@ impl Rows {
         self.rows.iter().any(|r| r.running)
     }
 
-    pub fn running(&self, id: &str) -> Option<bool> {
-        Some(self.rows.iter().find(|r| r.spec.id == id)?.running)
+    pub fn toggle_target(&self, id: &str) -> Option<bool> {
+        let row = self.rows.iter().find(|r| r.spec.id == id && !r.spec.disabled)?;
+        Some(!row.running)
     }
 
     fn foreground(&mut self) -> Option<Foreground> {
@@ -359,11 +361,11 @@ impl Rows {
             self.id_sequence = self.id_sequence.wrapping_add(1);
             let bits = RandomState::new().hash_one(self.id_sequence);
             let id = format!("{:012x}", bits & 0xffff_ffff_ffff);
-            if self.running(&id).is_none() && !self.held.contains_key(&id) {
+            if !self.rows.iter().any(|r| r.spec.id == id) && !self.held.contains_key(&id) {
                 break id;
             }
         };
-        self.rows.push(Row::new(RowSpec { id, input }));
+        self.rows.push(Row::new(RowSpec { id, disabled: false, input }));
     }
 
     pub fn edit(&mut self, id: &str, input: Input) {
@@ -385,6 +387,14 @@ impl Rows {
         let row = &mut self.rows[index];
         row.configure(input);
         row.due = Instant::now();
+    }
+
+    pub fn set_disabled(&mut self, id: &str, disabled: bool) {
+        let Some(row) = self.rows.iter_mut().find(|r| r.spec.id == id) else { return };
+        row.spec.disabled = disabled;
+        if disabled {
+            self.set_running(Some(id), false);
+        }
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -415,6 +425,9 @@ impl Rows {
         let was_running = self.any_running();
         let now = Instant::now();
         for row in self.rows.iter_mut().filter(|r| select(&r.spec)) {
+            if running && row.spec.disabled {
+                continue;
+            }
             if running && !row.running {
                 row.due = now;
             }

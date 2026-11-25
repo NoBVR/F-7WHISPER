@@ -1,10 +1,20 @@
 # F-7WHISPER handoff: Windows PC → Mac
 
-Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac could continue locally, then updated the same day on the Mac (two-key keys) and on the PC (version 1.1.0, §0). Source code is authoritative if this file goes stale.
+Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Mac could continue locally, then updated on the Mac (two-key keys; signing and in-place updates, 2026-11-25) and on the PC (version 1.1.0). Source code is authoritative if this file goes stale.
 
 ---
 
-## 0. Start here: what changed last (2026-11-22, on the PC: version 1.1.0)
+## 0. Start here: what changed last (2026-11-25, on the Mac)
+
+**For the PC: one Windows host change, [disabling a row](ROW-DISABLE.md)** (the ⋯ menu gets Disable / Enable; a disabled row is greyed out and never runs). Follow that file's "Windows: what to change", then rebuild and reinstall (§7). Everything else below needs no C# change.
+
+- **Mac signing:** every Mac build is now signed with one self-signed certificate, "F-7WHISPER Self-Signed", so the Accessibility permission survives reinstalls and updates. This was verified on the user's Mac: after re-adding the permission once, a rebuilt app kept it. Details, secrets and the lost-certificate plan are in [`docs/UPDATES.md`](UPDATES.md) "Signing". `release.yml` signs with it from GitHub secrets, so **either machine can still release**.
+- **Mac updates install in place:** download, check the signature, swap the app, relaunch; the old open-the-dmg way remains the fallback ([`docs/UPDATES.md`](UPDATES.md) "Installing"). The page contract is unchanged.
+- **Page fix, Mac only in effect:** clicking a key box (Key, Activate, Start all / Stop all) now focuses it. WebKit doesn't focus a button on click, so key presses went nowhere until something else in the dialog had focus. On Windows the box already had focus, so nothing changes there.
+- **Page, Mac labels:** modifiers are now joined like on Windows: `⌃ + 8`, `⌃ + F7 + G` (was `⌃8`). Older saved labels are shown the new way.
+- **GitHub token:** pushing a change to `.github/workflows/*` needs the `workflow` scope (`gh auth refresh -h github.com -s workflow`). The Mac has it now; the PC may not.
+
+## Earlier: 2026-11-22, on the PC (version 1.1.0)
 
 **For the Mac, first:** the repo's history was rewritten, so an older clone must be reset once, then use the no-reply identity (details in [`docs/UPDATES.md`](UPDATES.md) "Git identity"):
 
@@ -195,7 +205,8 @@ The user asked for a 1:1 copy of Blur AutoClicker v3.10.2's engine (GitHub `Blur
 git clone https://github.com/NoBVR/F-7WHISPER.git && cd F-7WHISPER
 npm ci
 npx tauri dev                                   # debug run (Accessibility goes to the terminal app)
-npx tauri build --bundles dmg                   # this Mac's architecture only
+# Sign with the F-7WHISPER certificate so Accessibility survives the reinstall (docs/UPDATES.md "Signing"):
+APPLE_SIGNING_IDENTITY="F-7WHISPER Self-Signed" npx tauri build --bundles dmg   # this Mac's architecture only
 # universal like CI: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npx tauri build --target universal-apple-darwin --bundles dmg
 cargo test --manifest-path blur-engine/Cargo.toml
@@ -203,7 +214,8 @@ cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 - **Bundle output:** `src-tauri/target/<target>/release/bundle/{macos/F-7WHISPER.app, dmg/*.dmg}`. For the native build there's no `<target>` folder: `src-tauri/target/release/bundle/…`.
-- **Install:** replace `/Applications/F-7WHISPER.app`, then re-grant Accessibility (see Task A).
+- **Install:** replace `/Applications/F-7WHISPER.app`. Built with `APPLE_SIGNING_IDENTITY="F-7WHISPER Self-Signed"`, the Accessibility permission carries over (verified 2026-11-25). An ad-hoc build (`-`, the config default) resets it, and the permission then has to be removed and re-added.
+- **`npx tauri build` rewrites `src-tauri/Cargo.toml`** (`features = []`). Run `git checkout src-tauri/Cargo.toml` afterwards; never commit that.
 - **Gatekeeper:** a downloaded or copied dmg/app shows "can't check it for malware". Either use *System Settings → Privacy & Security → Open Anyway*, or run `xattr -dr com.apple.quarantine /Applications/F-7WHISPER.app`.
 - **CI:** `gh workflow run mac.yml --repo NoBVR/F-7WHISPER` (add `--ref <branch>` to test a branch first). The artifact is `F-7WHISPER-mac`: `gh run download <id> --repo NoBVR/F-7WHISPER --name F-7WHISPER-mac`.
 - **Checking C# on the Mac (untested idea):** `dotnet build F7Whisper.csproj -p:EnableWindowsTargeting=true -p:SkipBlurEngineBuild=true` might compile-check the Windows host. It can't run there.
@@ -234,7 +246,13 @@ cargo check --manifest-path src-tauri/Cargo.toml
   - the `cfg(windows)` Tauri paths pass `cargo check`;
   - the release workflow built and published v1.1.0;
   - the **Windows updater works end to end**: a copy built as 1.0.9 showed the bar, downloaded the release zip, replaced itself, restarted as 1.1.0 in about 3 s and left no temp or backup files. This was driven over CDP, with no screen input.
-- **Mac updater** (2026-11-25, on the user's Mac): a copy built with `--config '{"version":"1.0.9"}'` found v1.1.0 with no errors. The user clicked the button, and it saved `~/Downloads/F-7WHISPER-1.1.0.dmg` (size and SHA-256 match the release asset) and opened it. Installing still means dragging the app from the dmg, and Accessibility has to be re-added each time because the app is ad-hoc signed.
+- **Mac updater** (2026-11-25, on the user's Mac): a copy built with `--config '{"version":"1.0.9"}'` found v1.1.0 with no errors. The user clicked the button, and it saved `~/Downloads/F-7WHISPER-1.1.0.dmg` (size and SHA-256 match the release asset) and opened it. That was the open-the-dmg path.
+- **Mac, 2026-11-25, on the user's Mac:**
+  - builds signed with the F-7WHISPER certificate keep Accessibility across reinstalls (re-added once, then a rebuilt app kept it);
+  - GitHub's release workflow signs with it: a manual run passed, with the license and signature checked inside the dmg;
+  - key boxes take keys on the first click;
+  - Disable / Enable on a row works.
+- **Not yet verified on the Mac:** the in-place update (needs a signed release newer than the installed app).
 
 **Not verified on Windows:** two-key activate keys with real key presses.
 

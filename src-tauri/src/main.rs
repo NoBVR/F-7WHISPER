@@ -42,6 +42,7 @@ enum Message {
     Window { action: String },
     Pin { on: bool },
     Toggle { id: String },
+    SetDisabled { id: String, disabled: bool },
     StartAll,
     StopAll,
     Add { input: Value },
@@ -185,7 +186,7 @@ impl Host {
         let height = window::initial_height(settings.rows.len());
         window::initialize(&window, settings.window, window::WIDTH, height);
         let position = window::position(&window).or(settings.window);
-        let _ = window.set_always_on_top(settings.pinned);
+        let _ = window::set_on_top(&window, settings.pinned);
         let pinned = window.is_always_on_top().unwrap_or(settings.pinned);
         let inbox = app.state::<Inbox>().inner().clone();
         let engine = Engine::new(
@@ -378,7 +379,7 @@ impl Host {
 
     fn cancel_pick(&mut self) {
         if self.picker.take().is_some() {
-            let _ = self.window.set_always_on_top(self.pinned);
+            let _ = window::set_on_top(&self.window, self.pinned);
         }
     }
 
@@ -413,6 +414,8 @@ impl Host {
             self.capture();
         }
         self.save();
+        #[cfg(target_os = "macos")]
+        self.updater.shutdown();
     }
 
     fn close(&mut self) {
@@ -446,8 +449,12 @@ impl Host {
             }
             #[cfg(target_os = "macos")]
             Message::Update(event) => {
+                let installing = matches!(event, update::Event::Installing);
                 if let Some(message) = self.updater.handle(event) {
                     self.emit(message);
+                    if installing {
+                        self.close();
+                    }
                 }
                 return;
             }
@@ -466,16 +473,21 @@ impl Host {
                 return;
             }
             Message::Pin { on } => {
-                if self.window.set_always_on_top(on || self.picker.is_some()).is_ok() {
+                if window::set_on_top(&self.window, on || self.picker.is_some()).is_ok() {
                     self.pinned = on;
                     self.dirty();
                 }
             }
             Message::Toggle { id } => {
-                let Some(running) = self.engine.rows().running(&id) else { return };
-                if running || self.allow_start() {
-                    self.engine.change(|rows| rows.set_running(Some(&id), !running));
+                let Some(start) = self.engine.rows().toggle_target(&id) else { return };
+                if !start || self.allow_start() {
+                    self.engine.change(|rows| rows.set_running(Some(&id), start));
                 }
+            }
+            Message::SetDisabled { id, disabled } => {
+                self.engine.change(|rows| rows.set_disabled(&id, disabled));
+                self.rebind(false);
+                self.dirty();
             }
             Message::StartAll => self.all(true),
             Message::StopAll => self.all(false),
@@ -550,7 +562,7 @@ impl Host {
             }
             Message::PickPoint => {
                 let was_down = desktop::left_down();
-                let _ = self.window.set_always_on_top(true);
+                let _ = window::set_on_top(&self.window, true);
                 self.picker = Some(Picker { was_down, due: Instant::now() });
                 return;
             }

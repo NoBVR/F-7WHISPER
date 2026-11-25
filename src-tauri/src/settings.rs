@@ -159,8 +159,16 @@ impl Input {
 #[derive(Clone, Serialize)]
 pub struct RowSpec {
     pub id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     #[serde(flatten)]
     pub input: Input,
+}
+
+impl RowSpec {
+    pub fn active_trigger(&self) -> Option<&Trigger> {
+        self.input.trigger.as_ref().filter(|_| !self.disabled)
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -314,7 +322,8 @@ impl Settings {
                 let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
                 let Some(input) = Input::read(item, true) else { continue };
                 if !id.trim().is_empty() && seen.insert(id) {
-                    rows.push(RowSpec { id: id.to_owned(), input });
+                    let disabled = item.get("disabled").and_then(Value::as_bool).unwrap_or(false);
+                    rows.push(RowSpec { id: id.to_owned(), disabled, input });
                 }
             }
         }

@@ -131,6 +131,11 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
 .trig .mode, .trig .hint { color: var(--muted); font-weight: 400; }
 .trig svg { color: var(--muted); }
 .trig.bad, .box.bad { box-shadow: inset 0 0 0 1px var(--red); }
+/* A disabled row is greyed out; its ⋯ menu stays fully visible so it can be enabled again */
+.row.disabled > :not(:last-child) { opacity: 0.4; }
+.pill.disabled { box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
+.toggle:disabled { cursor: default; }
+.toggle:disabled:hover { background: var(--fill); }
 .menu hr { height: 1px; margin: 6px 4px; border: 0; background: var(--line); }
 
 /* ── Footer ── */
@@ -235,6 +240,7 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
 
 <div class="menu" id="menu" role="menu" hidden>
   <button type="button" role="menuitem" data-menu="edit">Edit</button>
+  <button type="button" role="menuitem" data-menu="disable" hidden>Disable</button>
   <button type="button" role="menuitem" class="danger" data-menu="remove">Delete</button>
 </div>
 <div class="menu apps" id="appMenu" role="menu" hidden></div>
@@ -382,7 +388,9 @@ const mock = (() => {
     { id: "a", kind: "key", label: "F", code: "KeyF", vk: 70, app: null, trigger: { hotkey: G, mode: "toggle" }, intervalMs: 250, running: true, count: 1284 },
     { id: "b", kind: "key", label: "Space", code: "Space", vk: 32, app: null, trigger: { hotkey: QE, mode: "hold" }, intervalMs: 1000, running: false, count: 0 },
     { id: "e", kind: "click", button: "left", at: null, app: "RobloxPlayerBeta.exe", trigger: { hotkey: { ...G, label: "X", code: "KeyX", vk: 88 }, mode: "hold" }, intervalMs: 100, running: true, count: 5120 },
+    { id: "d", kind: "key", label: "R", code: "KeyR", vk: 82, app: null, trigger: null, intervalMs: 500, running: false, count: 37, disabled: true },
   ];
+  rows.forEach((r) => (r.disabled = !!r.disabled));
   const st = { pinned: false, hotkeys: { start: F6, stop: F7 }, switchStop: true, twoKey: true };
   const push = () => setTimeout(() => receive({
     type: "state", version: "1.1.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
@@ -401,10 +409,11 @@ const mock = (() => {
   return {
     handle(m) {
       const r = m.id && find(m.id);
-      if (m.type === "toggle" && r) r.running = !r.running;
-      else if (m.type === "startAll" || m.type === "stopAll") rows.forEach((x) => (x.running = m.type === "startAll"));
+      if (m.type === "toggle" && r) r.running = !r.running && !r.disabled;
+      else if (m.type === "startAll" || m.type === "stopAll") rows.forEach((x) => (x.running = m.type === "startAll" && !x.disabled));
+      else if (m.type === "setDisabled" && r) { r.disabled = !!m.disabled; if (r.disabled) r.running = false; }
       else if (m.type === "pin") st.pinned = m.on;
-      else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), ...fromInput(m.input), app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs, running: false, count: 0 });
+      else if (m.type === "add") rows.push({ id: Math.random().toString(36).slice(2, 8), ...fromInput(m.input), app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs, running: false, count: 0, disabled: false });
       else if (m.type === "edit" && r) Object.assign(r, fromInput(m.input), { app: m.input.app, trigger: m.input.trigger, intervalMs: m.input.intervalMs });
       else if (m.type === "remove" && r) rows.splice(rows.indexOf(r), 1);
       else if (m.type === "settings") Object.assign(st, { hotkeys: m.hotkeys, switchStop: m.switchStop }, typeof m.twoKey === "boolean" ? { twoKey: m.twoKey } : {});
@@ -489,7 +498,7 @@ function renderKbd(which) {
   const hk = state.hotkeys && state.hotkeys[which];
   const ok = !!(hk && state.hotkeyOk && state.hotkeyOk[which]);
   kbd.hidden = !ok;
-  kbd.textContent = ok ? hk.label : "";
+  kbd.textContent = ok ? showLabel(hk.label) : "";
   $(`${which}All`).classList.toggle("has-kbd", ok);
 }
 
@@ -505,14 +514,14 @@ function render() {
   const focusedRole = document.activeElement && document.activeElement.dataset.role;
   $("rows").innerHTML = state.rows.length
     ? state.rows.map((r, i) => `
-      <div class="tr row" role="row" data-id="${esc(r.id)}">
+      <div class="tr row${r.disabled ? " disabled" : ""}" role="row" data-id="${esc(r.id)}">
         <span class="num">${i + 1}</span>
         <span class="input" title="${esc(rowTitle(r))}">${r.kind === "click" ? ICON_MOUSE : ""}<strong class="key">${esc(rowName(r))}</strong></span>
         <span>${trigChip(r)}</span>
         <span class="every">${esc(fmtEvery(r.intervalMs))}</span>
         <span class="count">${fmtCount(r.count)}</span>
-        <span><span class="pill ${r.running ? "on" : "off"}">${r.running ? "Running" : "Stopped"}</span></span>
-        <span><button class="toggle ${r.running ? "stop" : ""}" type="button" data-role="toggle">${r.running ? ICON_STOP + "Stop" : ICON_PLAY + "Start"}</button></span>
+        <span>${r.disabled ? '<span class="pill disabled">Disabled</span>' : `<span class="pill ${r.running ? "on" : "off"}">${r.running ? "Running" : "Stopped"}</span>`}</span>
+        <span><button class="toggle ${r.running ? "stop" : ""}" type="button" data-role="toggle"${r.disabled ? " disabled" : ""}>${r.running ? ICON_STOP + "Stop" : ICON_PLAY + "Start"}</button></span>
         <span><button class="more" type="button" data-role="more" aria-label="More for ${esc(rowName(r))}" aria-haspopup="menu" aria-expanded="false">${ICON_MORE}</button></span>
       </div>`).join("")
     : '<div class="empty">Nothing added yet</div>';
@@ -579,10 +588,10 @@ const ICON_CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none
 function trigChip(r) {
   const t = r.trigger;
   const body = t
-    ? `<span class="mode">${MODE_NAME[t.mode] || "Hold"}</span><span class="label">${esc(t.hotkey.label)}</span>`
+    ? `<span class="mode">${MODE_NAME[t.mode] || "Hold"}</span><span class="label">${esc(showLabel(t.hotkey.label))}</span>`
     : '<span class="hint">None</span>';
-  const title = t ? `${MODE_NAME[t.mode] || "Hold"} ${t.hotkey.label}` : "No activate key";
-  return `<button class="trig${t && r.triggerOk === false ? " bad" : ""}" type="button" data-role="trig" title="${esc(title)}" aria-haspopup="menu" aria-expanded="false">${body}${ICON_CHEVRON}</button>`;
+  const title = t ? `${MODE_NAME[t.mode] || "Hold"} ${showLabel(t.hotkey.label)}` : "No activate key";
+  return `<button class="trig${t && r.triggerOk === false && !r.disabled ? " bad" : ""}" type="button" data-role="trig" title="${esc(title)}" aria-haspopup="menu" aria-expanded="false">${body}${ICON_CHEVRON}</button>`;
 }
 function inputOf(r, trigger) {
   return r.kind === "click"
@@ -660,7 +669,7 @@ function placeMenu(menu, anchor, align) {   // align: "right" | "left" | "match"
   menu.style.top = `${down ? a.bottom + 4 : a.top - 4 - mh}px`;
 }
 function menuKeys(menu, e, close) {
-  const items = [...menu.querySelectorAll("button")];
+  const items = [...menu.querySelectorAll("button:not([hidden])")];
   const i = items.indexOf(document.activeElement);
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus(); }
   if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); close(true); }
@@ -670,6 +679,11 @@ let menuFor = null;
 function openMenu(id, anchor) {
   closeMenu();
   menuFor = id;
+  // Hosts that support disabling send a boolean "disabled" on every row; older hosts don't get the item.
+  const r = state.rows.find((x) => x.id === id);
+  const dis = $("menu").querySelector('[data-menu="disable"]');
+  dis.hidden = !r || typeof r.disabled !== "boolean";
+  dis.textContent = r && r.disabled ? "Enable" : "Disable";
   placeMenu($("menu"), anchor, "right");
   anchor.setAttribute("aria-expanded", "true");
   anchor.closest(".row").classList.add("menu-open");
@@ -687,8 +701,10 @@ $("menu").addEventListener("click", (e) => {
   if (!item || !menuFor) return;
   const id = menuFor;
   closeMenu();
+  const row = state.rows.find((r) => r.id === id);
   if (item.dataset.menu === "remove") send({ type: "remove", id });
-  else openAdd(state.rows.find((r) => r.id === id));
+  else if (item.dataset.menu === "disable") { if (row) send({ type: "setDisabled", id, disabled: !row.disabled }); }
+  else openAdd(row);
 });
 $("menu").addEventListener("keydown", (e) => menuKeys($("menu"), e, closeMenu));
 
@@ -771,10 +787,12 @@ function keyLabel(e) {
 }
 // Mouse side buttons (event.button 3 and 4) as hotkeys; vk 5 / 6 are Windows' VK_XBUTTON1 / VK_XBUTTON2.
 const MOUSE = { 3: { code: "MouseBack", vk: 5, label: "Mouse 4" }, 4: { code: "MouseForward", vk: 6, label: "Mouse 5" } };   // gamer names for back / forward
+// Keys saved before 2026-11-25 have Mac labels with the symbols run together ("⌃8"): show them as "⌃ + 8".
+const showLabel = (s) => (isMac() ? String(s).replace(/^([⌃⌥⇧⌘]+)(?! \+ )(?=.)/u, (m) => [...m].join(" + ") + " + ") : s);
 function hotkeyLabel(h, keys) {
   const order = ["ctrl", "alt", "shift", "meta"].filter((m) => h[m]);
   return isMac()
-    ? order.map((m) => ({ ctrl: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" })[m]).join("") + keys.join(" + ")
+    ? [...order.map((m) => ({ ctrl: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" })[m]), ...keys].join(" + ")
     : [...order.map((m) => ({ ctrl: "Ctrl", alt: "Alt", shift: "Shift", meta: "Win" })[m]), ...keys].join(" + ");
 }
 function hotkeyFrom(e) {
@@ -897,7 +915,7 @@ function showAdd() {
   const tc = $("trigCapture");
   tc.classList.toggle("listening", add.trigListening);
   tc.innerHTML = add.trigPending ? `${esc(add.trigPending.hotkey.label)}<span class="hint">+ …</span>`
-    : add.trigListening ? '<span class="hint">Press a key</span>' : add.trigger ? esc(add.trigger.label) : '<span class="hint">None</span>';
+    : add.trigListening ? '<span class="hint">Press a key</span>' : add.trigger ? esc(showLabel(add.trigger.label)) : '<span class="hint">None</span>';
   const bad = conflicts();
   tc.classList.toggle("bad", bad.trigger && !add.trigListening);
   cap.classList.toggle("bad", bad.key && !add.listening);
@@ -955,8 +973,10 @@ $("addDialog").addEventListener("click", (e) => {
   }
   if (b.dataset.unit) { add.unit = b.dataset.unit; showAdd(); }
   if (b.id === "pick") add.picking ? (stopPick(), showAdd()) : startPick();
-  if (b.id === "capture") { stopTrigListen(); add.listening = true; showAdd(); }
-  if (b.id === "trigCapture") startTrigListen();
+  // WebKit (macOS) doesn't focus a button on click, so keys would land outside the dialog. Focus the box
+  // first: that blurs the other box (ending its listening) before this one starts.
+  if (b.id === "capture") { b.focus(); stopTrigListen(); add.listening = true; showAdd(); }
+  if (b.id === "trigCapture") { b.focus(); startTrigListen(); }
   if (b.id === "trigClear") { stopTrigListen(); add.trigger = null; showAdd(); }
   if (b.dataset.mode) { add.mode = b.dataset.mode; showAdd(); }
   if (b.id === "appPick") $("appMenu").hidden ? openAppMenu() : closeAppMenu();
@@ -1072,7 +1092,7 @@ function showSettings() {
     const box = $(which === "start" ? "hkStart" : "hkStop");
     const hk = set.draft[which];
     box.classList.toggle("listening", set.listening === which);
-    box.innerHTML = set.listening === which ? '<span class="hint">Press a key</span>' : hk ? esc(hk.label) : '<span class="hint">None</span>';
+    box.innerHTML = set.listening === which ? '<span class="hint">Press a key</span>' : hk ? esc(showLabel(hk.label)) : '<span class="hint">None</span>';
   }
   $("switchStop").setAttribute("aria-checked", String(set.draft.switchStop));
   $("twoKeyRow").hidden = !twoKeyHost();
@@ -1105,7 +1125,7 @@ function closeSettings() {
 $("setDialog").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
-  if (b.dataset.hk) listenHotkey(b.dataset.hk);
+  if (b.dataset.hk) { b.focus(); listenHotkey(b.dataset.hk); }   // focus first: see the Add dialog's click handler
   if (b.dataset.hkClear) { stopListening(); set.draft[b.dataset.hkClear] = null; showSettings(); }
   if (b.id === "switchStop") { set.draft.switchStop = !set.draft.switchStop; showSettings(); }
   if (b.id === "twoKey") { set.draft.twoKey = !set.draft.twoKey; showSettings(); }

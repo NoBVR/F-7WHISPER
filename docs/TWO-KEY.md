@@ -1,6 +1,6 @@
 # Two-key activate keys
 
-Added on the Mac on 2026-11-22. A row's activate key (Hold or Press) can be two ordinary keys held together, for example `F7 + G`, optionally with modifiers (`⌃F7 + G`). A Settings switch, **Two-key activate keys**, turns the feature off.
+Added on the Mac on 2026-11-22. A row's activate key (Hold or Press) can be two ordinary keys held together, for example `F7 + G`, optionally with modifiers (`⌃ + F7 + G`). A Settings switch, **Two-key activate keys**, turns the feature off.
 
 **Status:**
 
@@ -19,7 +19,7 @@ A hotkey can have an optional second key, `with`:
   "with": { "label": "G", "code": "KeyG", "vk": 71 } }
 ```
 
-- `label` is the full label the page shows: `F7 + G` on Windows, `⌃F7 + G` on Mac (modifier symbols before the first key).
+- `label` is the full label the page shows: `Ctrl + F7 + G` on Windows, `⌃ + F7 + G` on Mac (modifiers first, every part joined with " + "; since 2026-11-25 the Mac page also shows older saved labels such as `⌃F7 + G` this way).
 - `with` is missing or `null` for a one-key hotkey. Old settings files have no `with` and load unchanged.
 - `with` never names a modifier (`ShiftLeft`, `ControlRight`, ...), a mouse button (`MouseBack`, `MouseForward`), or the same key as `code`. A host rejects such a hotkey.
 - Only row activate keys (`trigger.hotkey`) use `with`. Start all / Stop all stay one key. The page never sends `with` for them.
