@@ -234,11 +234,11 @@ cargo check --manifest-path src-tauri/Cargo.toml
   - the `cfg(windows)` Tauri paths pass `cargo check`;
   - the release workflow built and published v1.1.0;
   - the **Windows updater works end to end**: a copy built as 1.0.9 showed the bar, downloaded the release zip, replaced itself, restarted as 1.1.0 in about 3 s and left no temp or backup files. This was driven over CDP, with no screen input.
+- **Mac updater** (2026-11-25, on the user's Mac): a copy built with `--config '{"version":"1.0.9"}'` found v1.1.0 with no errors. The user clicked the button, and it saved `~/Downloads/F-7WHISPER-1.1.0.dmg` (size and SHA-256 match the release asset) and opened it. Installing still means dragging the app from the dmg, and Accessibility has to be re-added each time because the app is ad-hoc signed.
 
 **Not verified on Windows:** two-key activate keys with real key presses.
 
 **Not verified on a real Mac:**
-- the updater (download to `~/Downloads`, opening the dmg); it only compiled on GitHub's Mac runner;
 - traffic-light position and title bar;
 - key and click delivery into real apps;
 - the Accessibility flow;
