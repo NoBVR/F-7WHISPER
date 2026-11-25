@@ -102,15 +102,14 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: F-7WHISPER Self-Signed
 
-      - name: App carries the license
-        run: find src-tauri/target/universal-apple-darwin/release/bundle -path '*.app/Contents/Resources/LICENSE' | grep -q .
-
       - run: cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg F-7WHISPER-macos.dmg
 
-      - name: The app in the dmg is signed with the F-7WHISPER certificate
+      # A dmg-only build removes the loose .app, so check the app inside the dmg users download.
+      - name: The app in the dmg carries the license and the F-7WHISPER signature
         run: |
           hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$RUNNER_TEMP/dmg" F-7WHISPER-macos.dmg
           APP="$RUNNER_TEMP/dmg/F-7WHISPER.app"
+          [ -f "$APP/Contents/Resources/LICENSE" ] || { echo "::error::F-7WHISPER.app is missing Contents/Resources/LICENSE"; hdiutil detach "$RUNNER_TEMP/dmg"; exit 1; }
           codesign --verify --deep --strict "$APP"
           codesign -d -r- "$APP" 2>&1 | grep -qi "certificate leaf = H\"$MAC_CERT_SHA1\"" \
             || { echo "::error::F-7WHISPER.app is not signed with the F-7WHISPER certificate"; hdiutil detach "$RUNNER_TEMP/dmg"; exit 1; }
