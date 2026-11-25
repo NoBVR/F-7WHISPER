@@ -186,7 +186,7 @@ impl Host {
         let height = window::initial_height(settings.rows.len());
         window::initialize(&window, settings.window, window::WIDTH, height);
         let position = window::position(&window).or(settings.window);
-        let _ = window::set_on_top(&window, settings.pinned);
+        let _ = window.set_always_on_top(settings.pinned);
         let pinned = window.is_always_on_top().unwrap_or(settings.pinned);
         let inbox = app.state::<Inbox>().inner().clone();
         let engine = Engine::new(
@@ -379,7 +379,7 @@ impl Host {
 
     fn cancel_pick(&mut self) {
         if self.picker.take().is_some() {
-            let _ = window::set_on_top(&self.window, self.pinned);
+            let _ = self.window.set_always_on_top(self.pinned);
         }
     }
 
@@ -473,7 +473,7 @@ impl Host {
                 return;
             }
             Message::Pin { on } => {
-                if window::set_on_top(&self.window, on || self.picker.is_some()).is_ok() {
+                if self.window.set_always_on_top(on || self.picker.is_some()).is_ok() {
                     self.pinned = on;
                     self.dirty();
                 }
@@ -562,7 +562,7 @@ impl Host {
             }
             Message::PickPoint => {
                 let was_down = desktop::left_down();
-                let _ = window::set_on_top(&self.window, true);
+                let _ = self.window.set_always_on_top(true);
                 self.picker = Some(Picker { was_down, due: Instant::now() });
                 return;
             }

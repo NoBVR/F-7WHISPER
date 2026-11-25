@@ -4,23 +4,6 @@ use tauri::{Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 /// Content width in CSS px until the page's `fit` says otherwise.
 pub const WIDTH: i64 = 800;
 
-pub fn set_on_top(window: &WebviewWindow, on_top: bool) -> tauri::Result<()> {
-    window.set_always_on_top(on_top)?;
-    // macOS: a pinned window also joins every Space and may sit over other apps' full-screen windows
-    // (a Roblox game in full screen); unpinned, it is an ordinary window again.
-    #[cfg(target_os = "macos")]
-    if objc2::MainThreadMarker::new().is_some() {
-        use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
-        let ptr = window.ns_window()?;
-        // SAFETY: on the main thread Tauri's NSWindow pointer is live for this turn of the run loop.
-        let native = unsafe { &*ptr.cast::<objc2_app_kit::NSWindow>() };
-        let mut behavior = native.collectionBehavior();
-        behavior.set(Behavior::CanJoinAllSpaces | Behavior::FullScreenAuxiliary, on_top);
-        native.setCollectionBehavior(behavior);
-    }
-    Ok(())
-}
-
 pub fn initial_height(rows: usize) -> i64 {
     // Title 32 + toolbar 52 + header 36 + rows (8 at most, then the table scrolls) + bottom gap 16.
     let body = if rows == 0 { 96 } else { (rows.min(8) as i64) * 48 };

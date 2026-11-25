@@ -12,6 +12,7 @@ Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Ma
 - **Mac updates install in place:** download, check the signature, swap the app, relaunch; the old open-the-dmg way remains the fallback ([`docs/UPDATES.md`](UPDATES.md) "Installing"). The page contract is unchanged.
 - **Page fix, Mac only in effect:** clicking a key box (Key, Activate, Start all / Stop all) now focuses it. WebKit doesn't focus a button on click, so key presses went nowhere until something else in the dialog had focus. On Windows the box already had focus, so nothing changes there.
 - **Page, Mac labels:** modifiers are now joined like on Windows: `⌃ + 8`, `⌃ + F7 + G` (was `⌃8`). Older saved labels are shown the new way.
+- **Tried and reverted, Mac only: showing the pinned window over a full-screen game** (the user plays Roblox in full screen). Two attempts were tested on the user's Mac and neither worked: NSWindow `CanJoinAllSpaces | FullScreenAuxiliary`, then also the `Accessory` activation policy while pinned. The user asked to cancel them, so pin is plain keep-on-top again, as in 1.1.0. If it comes up again, the remaining idea is a non-activating `NSPanel` (as in `tauri-nspanel`); ask the user first.
 - **GitHub token:** pushing a change to `.github/workflows/*` needs the `workflow` scope (`gh auth refresh -h github.com -s workflow`). The Mac has it now; the PC may not.
 
 ## Earlier: 2026-11-22, on the PC (version 1.1.0)
