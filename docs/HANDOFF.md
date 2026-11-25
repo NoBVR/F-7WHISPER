@@ -4,11 +4,15 @@ Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Ma
 
 ---
 
-## 0. Start here: what changed last (2026-11-25, on the Mac)
+## 0. Start here: what changed last (2026-11-25)
 
-**For the PC: one Windows host change, [disabling a row](ROW-DISABLE.md)** (the ⋯ menu gets Disable / Enable; a disabled row is greyed out and never runs). Follow that file's "Windows: what to change", then rebuild and reinstall (§7). Everything else below needs no C# change.
+**Later on 2026-11-25, on the PC: version 1.2.0.** The Windows host now has [disabling a row](ROW-DISABLE.md) (done, tested in a test copy). Then everything below, the Mac's work included, was released as **1.2.0** at the user's request, so both installed apps offer it in their update bar. **For the Mac:** check that its installed app offers 1.2.0 and replaces itself in place, and record it in §8 (the "Then release 1.2.0" note below).
 
-**Then release 1.2.0.** On 2026-11-25 the user chose to ship 1.2.0 to both apps "After the PC adds Disable". Bump the version and push the `v1.2.0` tag ([`docs/UPDATES.md`](UPDATES.md) "Releasing"); `release.yml` signs the Mac app. That release is also the first real test of the Mac's in-place update: the Mac's installed app (1.1.0, signed, with the new updater) should offer 1.2.0 and replace itself. Claude on the Mac checks that and records it in §8.
+### Earlier on 2026-11-25, on the Mac
+
+**For the PC (done): one Windows host change, [disabling a row](ROW-DISABLE.md)** (the ⋯ menu gets Disable / Enable; a disabled row is greyed out and never runs). Everything else below needs no C# change.
+
+**Then release 1.2.0 (done on the PC).** On 2026-11-25 the user chose to ship 1.2.0 to both apps "After the PC adds Disable". Bump the version and push the `v1.2.0` tag ([`docs/UPDATES.md`](UPDATES.md) "Releasing"); `release.yml` signs the Mac app. That release is also the first real test of the Mac's in-place update: the Mac's installed app (1.1.0, signed, with the new updater) should offer 1.2.0 and replace itself. Claude on the Mac checks that and records it in §8.
 
 - **Mac signing:** every Mac build is now signed with one self-signed certificate, "F-7WHISPER Self-Signed", so the Accessibility permission survives reinstalls and updates. This was verified on the user's Mac: after re-adding the permission once, a rebuilt app kept it. Details, secrets and the lost-certificate plan are in [`docs/UPDATES.md`](UPDATES.md) "Signing". `release.yml` signs with it from GitHub secrets, so **either machine can still release**.
 - **Mac updates install in place:** download, check the signature, swap the app, relaunch; the old open-the-dmg way remains the fallback ([`docs/UPDATES.md`](UPDATES.md) "Installing"). The page contract is unchanged.

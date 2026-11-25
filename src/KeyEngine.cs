@@ -122,7 +122,7 @@ internal sealed class KeyEngine : IDisposable
                 id = Guid.NewGuid().ToString("N")[..12];
             } while (Find(id) is not null);
 
-            _rows.Add(new Row(spec with { Id = id }));
+            _rows.Add(new Row(spec with { Id = id, Disabled = false }));
             _wake.Set();
         }
     }
@@ -134,6 +134,7 @@ internal sealed class KeyEngine : IDisposable
             if (Find(spec.Id) is not { } row)
                 return;
 
+            spec = spec with { Disabled = row.Spec.Disabled };   // editing keeps a row disabled
             if (row.Running && row.Spec.Trigger is { Hold: true } old &&
                 old.Hotkey.Chord != spec.Trigger?.Hotkey.Chord)
             {
@@ -169,12 +170,32 @@ internal sealed class KeyEngine : IDisposable
     {
         lock (_gate)
         {
-            if (Find(id) is not { } row)
+            if (Find(id) is not { } row || row.Spec.Disabled)
                 return;
 
             SetRunning(row, !row.Running);
             UpdateWatch();
             _wake.Set();
+        }
+    }
+
+    // A disabled row never runs: toggle, Start all and its activate key all skip it, and
+    // TriggerChords leaves its key out so the key reaches other apps. Enabling doesn't start it.
+    internal bool SetDisabled(string id, bool disabled)
+    {
+        lock (_gate)
+        {
+            if (Find(id) is not { } row || row.Spec.Disabled == disabled)
+                return false;
+
+            if (disabled)
+            {
+                SetRunning(row, false);
+                UpdateWatch();
+            }
+            row.Spec = row.Spec with { Disabled = disabled };
+            _wake.Set();
+            return true;
         }
     }
 
@@ -185,7 +206,8 @@ internal sealed class KeyEngine : IDisposable
             if (running)
             {
                 foreach (var row in _rows)
-                    SetRunning(row, true);
+                    if (!row.Spec.Disabled)
+                        SetRunning(row, true);
                 UpdateWatch();
             }
             else
@@ -200,7 +222,7 @@ internal sealed class KeyEngine : IDisposable
     {
         lock (_gate)
         {
-            return _rows.Where(row => row.Spec.Trigger is not null)
+            return _rows.Where(row => !row.Spec.Disabled && row.Spec.Trigger is not null)
                         .Select(row => row.Spec.Trigger!.Hotkey.Chord).Distinct().ToArray();
         }
     }
@@ -216,7 +238,8 @@ internal sealed class KeyEngine : IDisposable
             bool start = false;
             foreach (var row in _rows)
             {
-                if (row.Spec.Trigger is not { } trigger || trigger.Hotkey.Chord != chord)
+                // An enabled row can share the chord, so it stays registered: skip the disabled one.
+                if (row.Spec.Disabled || row.Spec.Trigger is not { } trigger || trigger.Hotkey.Chord != chord)
                     continue;
 
                 if (trigger.Hold)
@@ -236,8 +259,8 @@ internal sealed class KeyEngine : IDisposable
             {
                 foreach (var row in _rows)
                 {
-                    if (row.Spec.Trigger is { Hold: false } trigger && trigger.Hotkey.Chord == chord &&
-                        row.Running != start)
+                    if (!row.Spec.Disabled && row.Spec.Trigger is { Hold: false } trigger &&
+                        trigger.Hotkey.Chord == chord && row.Running != start)
                     {
                         changed = true;
                         SetRunning(row, start);
@@ -416,7 +439,8 @@ internal sealed class KeyEngine : IDisposable
                     spec.Id, spec.Kind, spec.Label, spec.Code, spec.Vk,
                     spec.Button, spec.At, spec.App, spec.IntervalMs, spec.Trigger,
                     TriggerOk = spec.Trigger is { } trigger && triggerOk(trigger.Hotkey.Chord),
-                    row.Running, row.Count
+                    row.Running, row.Count,
+                    spec.Disabled   // on every row: the page's gate for the Disable / Enable item
                 };
             }).ToArray();
         }

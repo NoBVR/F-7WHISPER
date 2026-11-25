@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Security;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace F7Whisper;
 
@@ -162,7 +163,10 @@ internal sealed record SavedWindow(int X, int Y);
 
 internal sealed record RowSpec(string Id, string Kind, string? Label, string? Code, int? Vk,
                                string? Button, ScreenPoint? At, string? App, int IntervalMs,
-                               Trigger? Trigger)
+                               Trigger? Trigger,
+                               // Saved only when true, so old files load with every row enabled.
+                               [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+                               bool Disabled = false)
 {
     internal static RowSpec? Read(JsonElement input, string id, bool fromFile)
     {
@@ -194,12 +198,14 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
         var kindField = input.Field("kind");
         string? kind = fromFile && kindField.ValueKind == JsonValueKind.Undefined
             ? "key" : kindField.Text();
+        // The page never sends it: "setDisabled" changes it, and edit keeps it (KeyEngine.Edit).
+        bool disabled = fromFile && input.Field("disabled").Boolean() == true;
 
         if (kind == "key")
         {
             var key = KeyChoice.Read(fromFile ? input : input.Field("key"));
             return key is null ? null : new RowSpec(
-                id, kind, key.Label, key.Code, key.Vk, null, null, app, interval, trigger);
+                id, kind, key.Label, key.Code, key.Vk, null, null, app, interval, trigger, disabled);
         }
 
         string? button = input.Field("button").Text();
@@ -221,7 +227,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
             return null;
         }
 
-        return new RowSpec(id, kind, null, null, null, button, point, app, interval, trigger);
+        return new RowSpec(id, kind, null, null, null, button, point, app, interval, trigger, disabled);
     }
 }
 

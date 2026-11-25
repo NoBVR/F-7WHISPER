@@ -523,6 +523,13 @@ internal sealed class MainForm : Form
                     RegisterHotkeys(refreshKeyboard: false);
                     break;
 
+                case "setDisabled" when id is not null:
+                    if (message.Field("disabled").Boolean() is not bool disabled ||
+                        !_engine.SetDisabled(id, disabled))
+                        return;
+                    RegisterHotkeys(refreshKeyboard: false);   // drops or restores its activate key
+                    break;
+
                 case "remove" when id is not null:
                     _engine.Remove(id);
                     RegisterHotkeys(refreshKeyboard: false);

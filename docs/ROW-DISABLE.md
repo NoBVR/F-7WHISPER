@@ -6,7 +6,7 @@ Added on the Mac on 2026-11-25, at the user's request: "When clicking the ... bu
 
 - **Shared page (`ui/index.html`):** done. Checked in the browser mock, including an old host that doesn't send the flag.
 - **Mac host (`src-tauri/`):** done on the Mac (see "Mac host" below).
-- **Windows C# host (`src/*.cs`): not done; do it on the PC** ("Windows: what to change"). Until then the page hides the menu item on Windows (see "Page gate"), so the Windows app keeps working as before after a rebuild.
+- **Windows C# host (`src/*.cs`): done on the PC on 2026-11-25** (version 1.2.0), following "Windows: what to change" below. Tested in a test copy through the page (no real key presses): disable stops a running row, toggle and Start all skip it, Edit keeps it disabled, a disabled two-key combo is dropped, it stays disabled after a restart, Enable brings it back stopped, and an old `settings.json` loads. One addition to the list: `KeyEngine.Activate` also skips disabled rows, because an enabled row can share the same activate key, which then stays registered.
 
 ## Contract (both hosts)
 
@@ -46,7 +46,7 @@ The host then:
 - `engine.rs`: toggle and Start all skip disabled rows; `trigger_keys` leaves them out; a new method sets the flag and stops the row.
 - `main.rs`: `Message::SetDisabled { id, disabled }` → engine, rebind, save, state. `state` rows include `disabled`.
 
-## Windows: what to change (not done; do on the PC)
+## Windows: what to change (done on the PC, 2026-11-25)
 
 Read the current code first; line numbers drift. Nothing here was compiled on the Mac.
 
