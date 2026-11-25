@@ -4,9 +4,11 @@ name: Release
 # The apps' updaters look for these exact asset names:
 #   F-7WHISPER-windows-x64.zip   (F-7WHISPER.exe + ui/)
 #   F-7WHISPER-macos.dmg         (universal)
+# Run it by hand (Actions > Release > Run workflow) to build and check both apps without publishing.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,6 +20,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Tag matches the app version
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
           $v = ([xml](Get-Content F7Whisper.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
@@ -47,6 +50,9 @@ jobs:
 
   mac:
     runs-on: macos-latest
+    env:
+      # SHA-1 of the "F-7WHISPER Self-Signed" certificate (public: it's in every signed app).
+      MAC_CERT_SHA1: 3e830f584bcdddbbfe7e5e2f437435f832c20692
     steps:
       - uses: actions/checkout@v5
 
@@ -55,6 +61,7 @@ jobs:
           node-version: 22
 
       - name: Tag matches the app version
+        if: github.ref_type == 'tag'
         run: node -e "const v = require('./src-tauri/tauri.conf.json').version; if ('v' + v !== process.env.GITHUB_REF_NAME) { console.error('Tag ' + process.env.GITHUB_REF_NAME + ' does not match tauri.conf.json version ' + v); process.exit(1); }"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -67,13 +74,47 @@ jobs:
 
       - run: npm ci
 
+      # Every Mac release is signed with the same self-signed certificate ("F-7WHISPER Self-Signed"),
+      # so macOS keeps the Accessibility permission across updates. An ad-hoc release would reset it
+      # for every install, so a missing certificate fails the build. See docs/UPDATES.md "Signing".
+      - name: Signing certificate
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MAC_CERT_P12" ] || [ -z "$MAC_CERT_PASSWORD" ]; then
+            echo "::error::The MAC_CERT_P12 and MAC_CERT_PASSWORD secrets are missing (docs/UPDATES.md, Signing)"; exit 1
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KCPW="$(openssl rand -hex 16)"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          printf '%s' "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -p codesigning "$KC" | grep -qi "$MAC_CERT_SHA1"
+
       # Universal = one app for Apple Silicon and Intel Macs.
       - run: npx tauri build --target universal-apple-darwin --bundles dmg
+        env:
+          APPLE_SIGNING_IDENTITY: F-7WHISPER Self-Signed
 
       - name: App carries the license
         run: find src-tauri/target/universal-apple-darwin/release/bundle -path '*.app/Contents/Resources/LICENSE' | grep -q .
 
       - run: cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg F-7WHISPER-macos.dmg
+
+      - name: The app in the dmg is signed with the F-7WHISPER certificate
+        run: |
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$RUNNER_TEMP/dmg" F-7WHISPER-macos.dmg
+          APP="$RUNNER_TEMP/dmg/F-7WHISPER.app"
+          codesign --verify --deep --strict "$APP"
+          codesign -d -r- "$APP" 2>&1 | grep -qi "certificate leaf = H\"$MAC_CERT_SHA1\"" \
+            || { echo "::error::F-7WHISPER.app is not signed with the F-7WHISPER certificate"; hdiutil detach "$RUNNER_TEMP/dmg"; exit 1; }
+          hdiutil detach "$RUNNER_TEMP/dmg"
 
       - uses: actions/upload-artifact@v5
         with:
@@ -83,6 +124,7 @@ jobs:
 
   release:
     needs: [windows, mac]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5
