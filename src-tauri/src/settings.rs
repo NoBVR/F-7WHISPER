@@ -105,7 +105,7 @@ impl Trigger {
 pub struct Input {
     #[serde(flatten)]
     pub action: Action,
-    pub interval_ms: i64,
+    pub interval_ms: f64,
     pub app: Option<String>,
     pub trigger: Option<Trigger>,
 }
@@ -146,7 +146,11 @@ impl Input {
             Some(name) => app_name(name.as_str()?),
         };
         // 1 ms = 1000 presses a second, Blur's ceiling.
-        let interval_ms = value.get("intervalMs")?.as_i64()?.clamp(1, 86_400_000);
+        let milliseconds = value.get("intervalMs")?.as_f64()?;
+        if !milliseconds.is_finite() {
+            return None;
+        }
+        let interval_ms = ((milliseconds * 1000.0).round() / 1000.0).clamp(1.0, 86_400_000.0);
         let trigger = match Trigger::read(value.get("trigger")) {
             Some(trigger) => trigger,
             None if saved_row => None,

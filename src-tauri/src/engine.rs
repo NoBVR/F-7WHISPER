@@ -92,7 +92,7 @@ mod blur {
             }
         }
 
-        pub fn start(self, interval_ms: i64) -> std::io::Result<BlurRun> {
+        pub fn start(self, interval_ms: f64) -> std::io::Result<BlurRun> {
             let input = match self {
                 Self::Key(vk) => BlurInput::Key { vk },
                 Self::Click(button, at) => BlurInput::Click {
@@ -104,7 +104,7 @@ mod blur {
                     at: at.map(|p| (p.x, p.y)),
                 },
             };
-            BlurRun::start(input, interval_ms.max(1) as f64)
+            BlurRun::start(input, interval_ms)
         }
     }
 
@@ -486,7 +486,7 @@ impl Rows {
         for row in self.rows.iter_mut().filter(|r| r.running && !r.on_blur()) {
             let now = Instant::now();
             if row.due <= now {
-                let period = Duration::from_millis(row.spec.input.interval_ms as u64);
+                let period = Duration::from_secs_f64(row.spec.input.interval_ms / 1000.0);
                 let remainder = (now.duration_since(row.due).as_nanos() % period.as_nanos()) as u64;
                 row.due = now + (period - Duration::from_nanos(remainder));
 
@@ -556,7 +556,7 @@ impl Rows {
                     row.count = row.count.max(active.count(active.run.clicks()));
                 }
             }
-            let period = Duration::from_millis(row.spec.input.interval_ms.max(1) as u64);
+            let period = Duration::from_secs_f64(row.spec.input.interval_ms / 1000.0);
             poll = Some(poll.map_or(period, |p| p.min(period)));
         }
         if ended && !self.any_running() {

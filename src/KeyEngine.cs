@@ -81,7 +81,7 @@ internal sealed class KeyEngine : IDisposable
         _thread.Start();
     }
 
-    private static long Milliseconds(int ms) =>
+    private static long Milliseconds(double ms) =>
         (long)Math.Round(ms * (Stopwatch.Frequency / 1000.0));
 
     internal int RowCount

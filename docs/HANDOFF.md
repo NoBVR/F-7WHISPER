@@ -4,7 +4,14 @@ Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Ma
 
 ---
 
-## 0. Start here: what changed last (2026-11-25)
+## 0. Start here: what changed last (2026-11-26, on the PC)
+
+**Decimal intervals and a click-rate unit, both hosts done on the PC (not released yet).** The user compared F-7WHISPER with Blur in Roblox Bedwars: Blur's 78.53 is a *rate* (78.53 clicks per second, every 12.73 ms, with 35% speed randomization), while F-7WHISPER's box meant every 78.53 ms and rounded it to 79. Blur got 33 to 34 hits, F-7WHISPER 32: the hit cooldown is reached sooner by the faster clicker.
+- The page keeps decimals (0.001 ms) and the Every box gets a third unit, `/s` (label turns to "Speed"). A row with decimals that is exactly an up-to-2-decimal rate shows as `79/s` again in the table and in Edit.
+- Windows (`src/Settings.cs`, `src/KeyEngine.cs`) and Mac (`src-tauri/src/settings.rs`, `engine.rs`) store `intervalMs` as a float. Contract in §4 "Input shape". Tested on Windows in a test copy through the page; the Mac side was type-checked on the PC and built by `mac.yml`, **not yet run on the Mac**: check a `/s` row on the Mac.
+- Not done: Blur's speed randomization (the user's Blur uses 35%; F-7WHISPER stays steady). Ask the user before adding it.
+
+## Earlier: 2026-11-25
 
 **Later on 2026-11-25, on the PC: version 1.2.0.** The Windows host now has [disabling a row](ROW-DISABLE.md) (done, tested in a test copy). Then everything below, the Mac's work included, was released as **1.2.0** at the user's request, so both installed apps offer it in their update bar. **For the Mac:** check that its installed app offers 1.2.0 and replaces itself in place, and record it in §8 (the "Then release 1.2.0" note below).
 
@@ -137,6 +144,7 @@ Key Mac files in `src-tauri/src/`:
 **Input shape:**
 - Key row: `{ kind: "key", key: {label, code, vk}, intervalMs, app, trigger }`
 - Click row: `{ kind: "click", button: "left"|"right"|"middle"|"back"|"forward", at: {x,y}|null, intervalMs, app, trigger }`
+- `intervalMs`: a number of milliseconds that may have decimals (`12.658`). Hosts round it to 0.001 ms, clamp it to 1 … 86,400,000 and pass the exact value to Blur's engine. Old files with whole numbers load unchanged. The page's `/s` unit is Blur's click rate: 79/s is sent as `12.658`.
 - `trigger`: `null` or `{ hotkey: {label, code, vk, ctrl, alt, shift, meta, with?}, mode: "hold"|"toggle" }`. `with: {label, code, vk}` is the second key of a two-key activate key ([`TWO-KEY.md`](TWO-KEY.md)).
 
 **Host → page** (Tauri event `host`):

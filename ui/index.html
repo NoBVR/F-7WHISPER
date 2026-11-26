@@ -295,6 +295,7 @@ kbd { display: inline-flex; align-items: center; height: 20px; margin-left: 4px;
         <div class="seg" role="group" aria-label="Unit">
           <button type="button" data-unit="ms" aria-pressed="true">ms</button>
           <button type="button" data-unit="s" aria-pressed="false">s</button>
+          <button type="button" data-unit="rate" aria-pressed="false" aria-label="Per second">/s</button>
         </div>
       </div>
     </div>
@@ -447,10 +448,19 @@ let apps = [];
 const isMac = () => (state.platform ? state.platform === "macos" : UA_MAC);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmtCount = (n) => n.toLocaleString("en-US");
+// Rows store only milliseconds. An interval that has decimals and is exactly a click rate with up to
+// 2 decimals (79/s = 12.658 ms) was typed as "/s", so it's shown and edited that way again.
+function rateOf(ms) {
+  if (Number.isInteger(ms)) return null;
+  const rate = Math.round(100000 / ms) / 100;
+  return Math.round(1000000 / rate) / 1000 === ms ? rate : null;
+}
 function fmtEvery(ms) {
+  const rate = rateOf(ms);
+  if (rate !== null) return `${rate}/s`;
   if (ms >= 60000 && ms % 60000 === 0) return `${ms / 60000} min`;
-  if (ms >= 1000) return `${+(ms / 1000).toFixed(3)} s`;
-  return `${ms} ms`;
+  if (ms >= 1000) return `${+(ms / 1000).toFixed(6)} s`;   // keeps 0.001 ms steps: 1500.25 ms = 1.50025 s
+  return `${+ms.toFixed(3)} ms`;
 }
 const BUTTON_NAME = { left: "Left click", right: "Right click", middle: "Middle click", back: "Mouse back", forward: "Mouse forward" };
 const rowName = (r) => (r.kind === "click" ? BUTTON_NAME[r.button] || "Left click" : r.label);
@@ -882,7 +892,10 @@ function setPressed(attr, value) { document.querySelectorAll(`#addDialog [data-$
 function intervalMs() {
   const v = Number($("intervalValue").value.trim().replace(",", "."));
   if (!Number.isFinite(v) || v <= 0) return null;
-  const ms = Math.round(add.unit === "s" ? v * 1000 : v);
+  // Decimals are kept to 0.001 ms (78.53 ms stays 78.53); Blur's engine takes the exact value.
+  // "/s" is Blur's click rate: 79 per second = every 12.658 ms.
+  const exact = add.unit === "rate" ? 1000 / v : add.unit === "s" ? v * 1000 : v;
+  const ms = Math.round(exact * 1000) / 1000;
   return ms >= 1 && ms <= 86400000 ? ms : null;   // 1 ms = 1000 a second, Blur's ceiling
 }
 function addReady() {
@@ -898,6 +911,8 @@ function showAdd() {
   setPressed("button", add.button);
   setPressed("where", add.where);
   setPressed("unit", add.unit);
+  $("everyLabel").textContent = add.unit === "rate" ? "Speed" : "Every";
+  $("intervalValue").placeholder = { ms: "1000", s: "1", rate: "10" }[add.unit] || "1000";
   $("clickFields").hidden = !click;
   $("keyField").hidden = click;
 
@@ -940,8 +955,10 @@ function openAdd(row, opts = {}) {
   add.app = row ? row.app || null : null;
   add.picking = false;
   add.listening = !row;
-  if (row && row.intervalMs >= 1000 && row.intervalMs % 1000 === 0) { $("intervalValue").value = String(row.intervalMs / 1000); add.unit = "s"; }
-  else { $("intervalValue").value = row ? String(row.intervalMs) : ""; add.unit = "ms"; }
+  const rate = row ? rateOf(row.intervalMs) : null;
+  if (rate !== null) { $("intervalValue").value = String(rate); add.unit = "rate"; }
+  else if (row && row.intervalMs >= 1000 && row.intervalMs % 1000 === 0) { $("intervalValue").value = String(row.intervalMs / 1000); add.unit = "s"; }
+  else { $("intervalValue").value = row ? String(+row.intervalMs.toFixed(3)) : ""; add.unit = "ms"; }
   showAdd();
   showScrim("addScrim", opts.listenTrigger ? $("trigCapture") : row ? $("intervalValue") : $("capture"));
   if (opts.listenTrigger) startTrigListen();

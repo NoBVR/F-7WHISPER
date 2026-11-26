@@ -162,7 +162,7 @@ internal sealed record ScreenPoint(int X, int Y);
 internal sealed record SavedWindow(int X, int Y);
 
 internal sealed record RowSpec(string Id, string Kind, string? Label, string? Code, int? Vk,
-                               string? Button, ScreenPoint? At, string? App, int IntervalMs,
+                               string? Button, ScreenPoint? At, string? App, double IntervalMs,
                                Trigger? Trigger,
                                // Saved only when true, so old files load with every row enabled.
                                [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -172,7 +172,7 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
     {
         var intervalField = input.Field("intervalMs");
         if (intervalField.ValueKind != JsonValueKind.Number ||
-            !intervalField.TryGetInt64(out long milliseconds))
+            !intervalField.TryGetDouble(out double milliseconds) || !double.IsFinite(milliseconds))
             return null;
 
         // A saved row keeps its keys or clicks if only its trigger is unreadable.
@@ -180,7 +180,8 @@ internal sealed record RowSpec(string Id, string Kind, string? Label, string? Co
             return null;
 
         // 1 ms = 1000 presses a second, Blur's ceiling.
-        int interval = (int)Math.Clamp(milliseconds, 1L, 86_400_000L);
+        double interval = Math.Clamp(Math.Round(milliseconds, 3, MidpointRounding.AwayFromZero),
+                                     1.0, 86_400_000.0);
         var appField = input.Field("app");
         string? app = null;
         if (appField.ValueKind == JsonValueKind.String)
