@@ -30,7 +30,7 @@ internal sealed class KeyboardHook : IDisposable
         _window = window;
         _bindings = bindings;
         _callback = OnKey;
-        _thread = new Thread(Run) { IsBackground = true, Name = "F-7WHISPER combo hotkeys" };
+        _thread = new Thread(Run) { IsBackground = true, Name = "F-7WHISPER keyboard hotkeys" };
     }
 
     internal bool Running => _running;
@@ -81,6 +81,14 @@ internal sealed class KeyboardHook : IDisposable
         return swallow;
     }
 
+    private void Capture(int vk, Chord chord, int id)
+    {
+        var edge = new Edge(chord, id, true);
+        _active.Add(edge);
+        _swallowed[vk] = true;
+        Post(edge);
+    }
+
     private bool KeyDown(int vk)
     {
         if (_held[vk])
@@ -92,6 +100,13 @@ internal sealed class KeyboardHook : IDisposable
 
         uint mods = Modifiers();
         var bindings = _bindings;
+        var single = new Chord(vk, mods);
+        if (bindings.TryGetValue(single, out int singleId))
+        {
+            Capture(vk, single, singleId);
+            return true;
+        }
+
         for (int other = 1; other < _held.Length; other++)
         {
             if (!_held[other] || other == vk)
@@ -110,10 +125,7 @@ internal sealed class KeyboardHook : IDisposable
                 continue;
             }
 
-            var edge = new Edge(chord, id, true);
-            _active.Add(edge);
-            _swallowed[vk] = true;
-            Post(edge);
+            Capture(vk, chord, id);
         }
 
         return _swallowed[vk];
@@ -136,7 +148,7 @@ internal sealed class KeyboardHook : IDisposable
         if (code == 0 && message is keyDown or keyUp or sysDown or sysUp)
         {
             var input = Marshal.PtrToStructure<KeyboardInput>(lParam);
-            if ((input.Flags & injected) == 0 && input.ExtraInfo != 0x800DA5A5u && input.Vk < 256)
+            if ((input.Flags & injected) == 0 && input.ExtraInfo != 0x800DA5A5u && input.Vk is > 0 and < 256)
             {
                 int vk = input.Vk switch
                 {
@@ -168,6 +180,11 @@ internal sealed class KeyboardHook : IDisposable
             for (int vk = 0; vk < _held.Length; vk++)
                 if (IsModifier(vk))
                     _held[vk] = Native.KeyDown(vk);
+
+            // A key already down at installation can send repeats before its first up.
+            foreach (var chord in _bindings.Keys)
+                if (!chord.IsCombo)
+                    _held[chord.Vk] = Native.KeyDown(chord.Vk);
 
             _running = true;
             _started.Set();

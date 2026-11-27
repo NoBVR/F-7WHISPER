@@ -32,8 +32,10 @@ internal static class JsonFields
 
 internal sealed record KeyChoice(string Label, string Code, int Vk)
 {
-    internal bool IsComboKey => Vk is not (1 or 2 or 4 or 5 or 6 or >= 0x10 and <= 0x12
-        or 0x5B or 0x5C or >= 0xA0 and <= 0xA5) &&
+    internal static bool IsOrdinaryKey(int vk) => vk is not (1 or 2 or 4 or 5 or 6
+        or >= 0x10 and <= 0x12 or 0x5B or 0x5C or >= 0xA0 and <= 0xA5);
+
+    internal bool IsComboKey => IsOrdinaryKey(Vk) &&
         Code is not ("ShiftLeft" or "ShiftRight" or "ControlLeft" or "ControlRight"
             or "AltLeft" or "AltRight" or "MetaLeft" or "MetaRight");
 
@@ -63,7 +65,6 @@ internal readonly record struct Chord
     internal uint Modifiers { get; }
     internal bool IsCombo => With != 0;
     internal bool IsMouse => Vk is 5 or 6;
-    internal bool UsesHook => IsMouse || IsCombo;
 
     internal Chord(int vk, uint modifiers, int with = 0)
     {

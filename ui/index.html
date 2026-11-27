@@ -396,6 +396,7 @@ const mock = (() => {
   const push = () => setTimeout(() => receive({
     type: "state", version: "1.1.0", platform: UA_MAC ? "macos" : "windows", accessOk: true, pinned: st.pinned,
     rows: rows.map((r) => ({ ...r, triggerOk: !!r.trigger && (st.twoKey || !r.trigger.hotkey.with) })), hotkeys: st.hotkeys, hotkeyOk: { start: !!st.hotkeys.start, stop: !!st.hotkeys.stop }, switchStop: st.switchStop, twoKey: st.twoKey,
+    ...(UA_MAC ? {} : { selfKey: true }),
   }));
   const find = (id) => rows.find((r) => r.id === id);
   const fromInput = (i) => (i.kind === "click"
@@ -853,6 +854,8 @@ const add = { editing: null, kind: "key", key: null, button: "left", where: "cur
 
 // An activate key must not be a Start all / Stop all hotkey or a key that a row presses (the press would set it off),
 // and a row must not press a key that activates a row. Two-key activate keys ignore F-7's own presses, so they're exempt.
+// A host that sends selfKey ignores F-7's own presses for one-key activate keys too (docs/SELF-KEY.md): hold F to spam F.
+const selfKeyHost = () => state.selfKey === true;
 const plain = (h) => !!h && !h.with && !h.ctrl && !h.alt && !h.shift && !h.meta;
 // A two-key activate key must not contain a one-key hotkey (same modifiers): that key alone would fire first.
 const sameMods = (a, b) => ["ctrl", "alt", "shift", "meta"].every((m) => !!a[m] === !!b[m]);
@@ -866,11 +869,12 @@ function conflicts() {
   const others = state.rows.filter((r) => !add.editing || r.id !== add.editing.id);
   const t = add.trigger;
   const keyCode = add.kind === "key" && add.key ? add.key.code : null;
+  const shared = selfKeyHost();
   return {
     trigger: !!t && (sameHotkey(t, hk.start) || sameHotkey(t, hk.stop) || overlaps(t, hk.start) || overlaps(t, hk.stop)
       || others.some((r) => r.trigger && overlaps(t, r.trigger.hotkey))
-      || (plain(t) && (t.code === keyCode || others.some((r) => r.kind === "key" && r.code === t.code)))),
-    key: !!keyCode && others.some((r) => r.trigger && plain(r.trigger.hotkey) && r.trigger.hotkey.code === keyCode),
+      || (!shared && plain(t) && (t.code === keyCode || others.some((r) => r.kind === "key" && r.code === t.code)))),
+    key: !shared && !!keyCode && others.some((r) => r.trigger && plain(r.trigger.hotkey) && r.trigger.hotkey.code === keyCode),
   };
 }
 function startTrigListen() {
