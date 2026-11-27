@@ -218,20 +218,17 @@ internal sealed class KeyEngine : IDisposable
         }
     }
 
-    internal Chord[] TriggerChords(out HashSet<int> pressedKeys)
+    internal Chord[] TriggerChords()
     {
         lock (_gate)
         {
-            // Use the VK actually sent, including numpad mappings and disabled output rows.
-            pressedKeys = _rows.Where(row => row.Spec.Kind == "key")
-                               .Select(row => (int)row.Stroke.Vk).ToHashSet();
             return _rows.Where(row => !row.Spec.Disabled && row.Spec.Trigger is not null)
                         .Select(row => row.Spec.Trigger!.Hotkey.Chord).Distinct().ToArray();
         }
     }
 
     // A physical press reaches this method once per chord, including shared triggers.
-    internal bool Activate(Chord chord, bool viaKeyboardHook)
+    internal bool Activate(Chord chord)
     {
         lock (_gate)
         {
@@ -271,7 +268,7 @@ internal sealed class KeyEngine : IDisposable
                 }
             }
 
-            if (hold && !viaKeyboardHook)
+            if (hold && !chord.IsCombo)
             {
                 if (chord.IsMouse)
                 {
@@ -307,19 +304,13 @@ internal sealed class KeyEngine : IDisposable
         return changed;
     }
 
-    // Keyboard edges carry the chord captured on down. Its release also serves
-    // when retiring the binding or transferring a previously polled chord.
-    internal bool ReleaseHookHold(Chord chord, bool onlyIfPolled = false)
+    // The keyboard hook emits an up only for an active combo. Retiring a combo
+    // also stops any running Hold rows before their release path disappears.
+    internal bool ReleaseHookHold(Chord chord)
     {
         lock (_gate)
         {
-            if (chord.IsMouse && !_mouseHolds.Remove(chord))
-                return false;
-
-            if (!_keyboardHolds.Remove(chord) && onlyIfPolled)
-                return false;
-
-            if (!StopHoldRows(chord))
+            if ((!chord.IsCombo && !_mouseHolds.Remove(chord)) || !StopHoldRows(chord))
                 return false;
 
             UpdateWatch();

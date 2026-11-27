@@ -4,19 +4,7 @@ Written 2026-11-22 by Claude on the user's Windows PC so Claude on the user's Ma
 
 ---
 
-## 0. Start here: what changed last (2026-11-27, on the PC)
-
-**For the Mac: [activate keys that a row presses](SELF-KEY.md).** The user wanted to hold F and have F-7WHISPER spam F into their game, and the page refused it.
-- Windows host and page: done on the PC. Windows routes such an activate key through `src/KeyboardHook.cs`, which ignores F-7's own presses, and sends `selfKey: true` in `state`. The page drops the conflict only for hosts that send it.
-- **Mac: not done**, so the Mac's page still blocks it as before. The to-do is in "Mac: what to change" in SELF-KEY.md.
-- Tested on Windows in a test copy, without real key presses: a row's own key goes through the hook and is not held by `RegisterHotKey`; it moves back to `RegisterHotKey` when the row presses something else; two shared rows work together; Disable/Enable and Start all are unchanged. The user tests real presses in their game.
-
-**For Claude on the PC: Claude's desktop app is an MSIX package.** Anything started from Claude's shell, F-7WHISPER included, sees a private copy of `%APPDATA%` at `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming` (that copy of `F-7WHISPER\settings.json` dates from 2026-11-20). The user's own F-7WHISPER reads the real file.
-- Restarting the user's app from the shell made their rows look lost. Start it through Explorer instead: `explorer.exe "%USERPROFILE%\Desktop\F-7WHISPER.lnk"`.
-- To read the real settings file, copy it out with a `.cmd` started by `explorer.exe`.
-- Test copies started from the shell can't touch the user's real settings. Minimize them right away, because the user may be clicking (or running an autoclicker) where the window opens. While a test copy runs, its activate keys are live system-wide, so use keys nobody presses, such as F23/F24.
-
-## Earlier: 2026-11-26, on the PC
+## 0. Start here: what changed last (2026-11-26, on the PC)
 
 **Decimal intervals and a click-rate unit, both hosts done on the PC (not released yet).** The user compared F-7WHISPER with Blur in Roblox Bedwars: Blur's 78.53 is a *rate* (78.53 clicks per second, every 12.73 ms, with 35% speed randomization), while F-7WHISPER's box meant every 78.53 ms and rounded it to 79. Blur got 33 to 34 hits, F-7WHISPER 32: the hit cooldown is reached sooner by the faster clicker.
 - The page keeps decimals (0.001 ms) and the Every box gets a third unit, `/s` (label turns to "Speed"). A row with decimals that is exactly an up-to-2-decimal rate shows as `79/s` again in the table and in Edit.
